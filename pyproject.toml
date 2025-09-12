@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haag-vector-quantization"
+version = "0.1.0"
+description = "Benchmarking framework for vector quantization methods (PQ, SQ, etc.)"
+authors = [
+  { name = "David Levy", email = "dlevy8@gatech.edu" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+
+dependencies = [
+  "numpy",
+  "scikit-learn",
+  "typer[all]"
+]
+
+[project.scripts]
+vq-benchmark = "haag_vq.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
