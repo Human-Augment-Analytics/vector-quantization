@@ -1,5 +1,6 @@
 import typer
 
+from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
 from haag_vq.metrics.distortion import compute_distortion
@@ -14,6 +15,7 @@ def run(
     dim: int = typer.Option(1024),
     num_chunks: int = typer.Option(8),
     num_clusters: int = typer.Option(256),
+    num_bits: int = typer.Option(8, help="Number of bits per subvector index"),
     with_recall: bool = typer.Option(False, help="Whether to compute Recall@k metrics")
 ):
     print(f"Loading dataset: {dataset}...")
@@ -28,6 +30,9 @@ def run(
     elif method == "sq":
         print("Fitting SQ...")
         model = ScalarQuantizer()
+    elif method == "opq":
+        print(f"Fitting OPQ (M={num_chunks} B={num_bits})")
+        model = OptimizedProductQuantizer(num_chunks, num_bits)
     else:
         raise ValueError(f"Unsupported method: {method}")
 
