@@ -1,13 +1,16 @@
+import math
 import numpy as np
 from sklearn.cluster import KMeans
 
 from .base_quantizer import BaseQuantizer
+from ..utils.memory_utils import bits_to_dtype
 
 
 class ProductQuantizer(BaseQuantizer):
     def __init__(self, num_chunks=8, num_clusters=256):
         self.num_chunks = num_chunks
         self.num_clusters = num_clusters
+        self.dtype = bits_to_dtype(math.ceil(math.log2(num_clusters)))
         self.codebooks = []
         self.chunk_dim = None
 
@@ -30,7 +33,7 @@ class ProductQuantizer(BaseQuantizer):
             centers = self.codebooks[i]
             assignments = np.argmin(np.linalg.norm(chunk[:, np.newaxis] - centers, axis=2), axis=1)
             compressed.append(assignments)
-        return np.stack(compressed, axis=1)  # shape: (N, num_chunks)
+        return np.stack(compressed, axis=1).astype(self.dtype)  # shape: (N, num_chunks)
 
     def decompress(self, compressed):
         vectors = []
@@ -39,7 +42,7 @@ class ProductQuantizer(BaseQuantizer):
             vectors.append(centers[compressed[:, i]])
         return np.hstack(vectors)
 
-    def get_compression_ratio(self, X):
-        original_size = X.shape[1] * 4  # float32 = 4 bytes
-        compressed_size = self.num_chunks  # one byte per chunk
-        return original_size / compressed_size
+    # def get_compression_ratio(self, X):
+    #     original_size = X.shape[1] * 4  # float32 = 4 bytes
+    #     compressed_size = self.num_chunks  # one byte per chunk
+    #     return original_size / compressed_size

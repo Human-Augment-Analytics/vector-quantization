@@ -1,5 +1,4 @@
 import numpy as np
-from sklearn.cluster import KMeans
 
 from .base_quantizer import BaseQuantizer
 
@@ -28,13 +27,8 @@ class OptimizedProductQuantizer(BaseQuantizer):
         self.pq = faiss.ProductQuantizer(D, self.M, self.B)
         self.pq.train(X)
 
-    def compress(self, X: np.ndarray):
+    def compress(self, X: np.ndarray) -> np.ndarray:
         return self.pq.compute_codes(self.opq.apply(X))  # shape: (N, M)
 
-    def decompress(self, compressed: np.ndarray):
+    def decompress(self, compressed: np.ndarray) -> np.ndarray:
         return self.opq.reverse_transform(self.pq.decode(compressed))  # shape: (N, D)
-
-    def get_compression_ratio(self, X: np.ndarray):
-        original_size = X.shape[1] * 4  # float32 = 4 bytes
-        compressed_size = self.M * self.B / 8  # B / 8 bytes per chunk
-        return original_size / compressed_size

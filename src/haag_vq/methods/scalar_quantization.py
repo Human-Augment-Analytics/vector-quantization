@@ -20,7 +20,7 @@ class ScalarQuantizer(BaseQuantizer):
         scaled = X_q.astype(np.float32) / 255.0
         return scaled * (self.max - self.min + 1e-8) + self.min
 
-    def get_compression_ratio(self, X):
-        original_size = X.shape[1] * 4  # float32
-        compressed_size = X.shape[1]    # 1 byte per dimension
-        return original_size / compressed_size
+    # def get_compression_ratio(self, X):
+    #     original_size = X.shape[1] * 4  # float32
+    #     compressed_size = X.shape[1]    # 1 byte per dimension
+    #     return original_size / compressed_size
