@@ -1,10 +1,10 @@
-"""FAISS export helpers for Haag VQ quantizers."""
+"""FAISS export and query helpers for Haag VQ quantizers."""
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 
@@ -48,6 +48,50 @@ def write_ivecs(path: PathLike, vectors: np.ndarray) -> Path:
             fh.write(dim_prefix.tobytes())
             fh.write(np.asarray(vec, dtype=np.int32).tobytes())
     return path
+
+
+def _load_vec_file(path: PathLike, value_dtype: np.dtype) -> np.ndarray:
+    """Load FAISS vector files (.fvecs/.ivecs)."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    raw = path.read_bytes()
+    if not raw:
+        return np.empty((0, 0), dtype=value_dtype)
+
+    ints = np.frombuffer(raw, dtype=np.int32)
+    dim = int(ints[0])
+    record = dim + 1
+    if dim <= 0:
+        raise ValueError(f"Invalid vector dimension ({dim}) in {path}")
+    if ints.size % record != 0:
+        raise ValueError(f"Corrupt vector file: {path}")
+
+    nvecs = ints.size // record
+    dims = ints.reshape(nvecs, record)[:, 0]
+    if not np.all(dims == dim):
+        raise ValueError(f"Non-uniform dimensions in {path}")
+
+    if value_dtype == np.int32:
+        data = ints.reshape(nvecs, record)[:, 1:]
+    elif value_dtype == np.float32:
+        floats = np.frombuffer(raw, dtype=np.float32).reshape(nvecs, record)
+        data = floats[:, 1:]
+    else:  # pragma: no cover - defensive branch
+        raise TypeError(f"Unsupported dtype: {value_dtype}")
+
+    return np.array(data, copy=True)
+
+
+def load_fvecs(path: PathLike) -> np.ndarray:
+    """Read ``.fvecs`` file into ``float32`` matrix."""
+    return _load_vec_file(path, np.float32)
+
+
+def load_ivecs(path: PathLike) -> np.ndarray:
+    """Read ``.ivecs`` file into ``int32`` matrix."""
+    return _load_vec_file(path, np.int32)
 
 
 def _default_index_key(model: BaseQuantizer) -> str:
@@ -127,3 +171,74 @@ def export_codebook(
         result["codes"] = codes_path
 
     return result
+
+
+def query_codebook(
+    queries: np.ndarray,
+    *,
+    model: Optional[BaseQuantizer] = None,
+    codebook_vectors: Optional[np.ndarray] = None,
+    codebook_path: Optional[PathLike] = None,
+    topk: int = 1,
+    metric: int = faiss.METRIC_L2,
+    index_key: Optional[str] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Search the exported codebook for the closest entries to ``queries``.
+
+    Args:
+        queries: Query vectors shaped ``(N, D)`` or ``(D,)``.
+        model: Optional trained quantizer. If provided, its configuration is used
+            to instantiate the FAISS index via :func:`build_faiss_index`.
+        codebook_vectors: Preloaded codebook vectors (``float32`` matrix).
+        codebook_path: Path to ``.fvecs`` file storing the codebook. Used when
+            ``codebook_vectors`` is not supplied.
+        topk: Number of nearest codebook entries to retrieve.
+        metric: FAISS distance metric constant (defaults to ``METRIC_L2``).
+        index_key: Optional override for FAISS factory key when ``model`` is set.
+
+    Returns:
+        Tuple ``(distances, indices)`` from ``faiss.Index.search``.
+    """
+    if codebook_vectors is None:
+        if codebook_path is None:
+            raise ValueError("Provide either codebook_vectors or codebook_path")
+        codebook_vectors = load_fvecs(codebook_path)
+    codebook_vectors = np.asarray(codebook_vectors, dtype=np.float32)
+
+    if codebook_vectors.ndim != 2:
+        raise ValueError("Codebook vectors must be 2D")
+
+    num_entries, dim = codebook_vectors.shape
+    if num_entries == 0:
+        raise ValueError("Codebook is empty; cannot run queries")
+
+    queries = np.asarray(queries, dtype=np.float32)
+    if queries.ndim == 1:
+        queries = queries.reshape(1, -1)
+    if queries.ndim != 2:
+        raise ValueError("Queries must be a 1D or 2D array")
+    if queries.shape[1] != dim:
+        raise ValueError(
+            f"Query dimensionality ({queries.shape[1]}) does not match codebook ({dim})"
+        )
+
+    if topk <= 0:
+        raise ValueError("topk must be positive")
+    topk = min(topk, num_entries)
+
+    if model is not None:
+        index = build_faiss_index(model, index_key=index_key, metric=metric)
+    else:
+        if metric == faiss.METRIC_L2:
+            index = faiss.IndexFlatL2(dim)
+        elif metric == faiss.METRIC_INNER_PRODUCT:
+            index = faiss.IndexFlatIP(dim)
+        else:
+            raise ValueError("Provide a quantizer model to build complex FAISS indexes")
+
+    if not index.is_trained:
+        index.train(codebook_vectors)
+    index.add(codebook_vectors)
+
+    distances, indices = index.search(queries, topk)
+    return distances, indices
