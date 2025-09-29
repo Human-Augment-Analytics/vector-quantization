@@ -16,7 +16,8 @@ license = "MIT"
 dependencies = [
   "numpy",
   "scikit-learn",
-  "typer[all]"
+  "typer[all]",
+  "faiss-cpu"
 ]
 
 [project.scripts]

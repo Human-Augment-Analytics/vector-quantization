@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import typer
 
 from haag_vq.methods.product_quantization import ProductQuantizer
@@ -6,6 +8,9 @@ from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.recall import evaluate_recall
 from haag_vq.data.datasets import Dataset, load_dummy_dataset
 from haag_vq.utils.run_logger import log_run
+
+CODEBOOKS_DIR = Path(__file__).resolve().parents[3] / "codebooks"
+
 
 def run(
     method: str = typer.Option("pq", help="Compression method: pq or sq"),
@@ -37,6 +42,21 @@ def run(
 
     distortion = compute_distortion(X, X_compressed, model)
     compression = model.get_compression_ratio(X)
+
+    try:
+        export_result = model.save_codebooks(
+            codes=X_compressed,
+            output_dir=CODEBOOKS_DIR,
+            codebook_filename=f"{method}_{dataset}_codebook.fvecs",
+            codes_filename=f"{method}_{dataset}_codes.ivecs",
+        )
+        print(f"Saved codebook to: {export_result['codebook']}")
+        if "codes" in export_result:
+            print(f"Saved codes to   : {export_result['codes']}")
+    except RuntimeError as exc:
+        print(f"Warning: FAISS export skipped ({exc})")
+    except Exception as exc:
+        print(f"Warning: Failed to export codebook ({exc})")
 
     metrics = {
         "distortion": distortion,
