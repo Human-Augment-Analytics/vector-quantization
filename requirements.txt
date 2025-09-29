@@ -3,3 +3,4 @@ scikit-learn
 typer
 datasets
 sentence-transformers
+faiss-cpu

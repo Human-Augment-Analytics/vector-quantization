@@ -19,7 +19,8 @@ dependencies = [
   "typer[all]",
   "datasets",
   "sentence-transformers",
-  "matplotlib"
+  "matplotlib",
+  "faiss-cpu"
 ]
 
 [project.scripts]
