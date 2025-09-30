@@ -45,3 +45,6 @@ class BaseQuantizer(ABC):
             np.ndarray: Approximate reconstructions of shape (N, D)
         """
         pass
+
+    def get_compression_ratio(self, X: np.ndarray, X_compressed: np.ndarray) -> float:
+        return X.nbytes / X_compressed.nbytes

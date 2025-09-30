@@ -1,8 +1,20 @@
+import click
+import math
 import typer
 
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
+try:
+    from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
+    from haag_vq.methods.rabit_quantization import RaBitQuantizer
+except Exception:
+    pass  # depends on the faiss module built from https://github.com/facebookresearch/faiss.git
+try:
+    from haag_vq.methods.variance_adaptive_quantization import VarianceAdaptiveQuantizer
+except Exception:
+    pass  # depends on pyvaq.so built from https://github.com/SichaoYang/VAQ.git
 from haag_vq.metrics.distortion import compute_distortion
+from haag_vq.metrics.faiss import MetricType
 from haag_vq.metrics.recall import evaluate_recall
 from haag_vq.data.datasets import Dataset, load_dummy_dataset
 from haag_vq.utils.run_logger import log_run
@@ -14,7 +26,16 @@ def run(
     dim: int = typer.Option(1024),
     num_chunks: int = typer.Option(8),
     num_clusters: int = typer.Option(256),
-    with_recall: bool = typer.Option(False, help="Whether to compute Recall@k metrics")
+    with_distortion: bool = typer.Option(True, help="Whether to compute distortion"),
+    with_recall: bool = typer.Option(False, help="Whether to compute Recall@k metrics"),
+    distance_metric: str = typer.Option(
+        MetricType.L2.name,
+        click_type=click.Choice(MetricType._member_names_, case_sensitive=False),
+        help="Distance metric type enum for FAISS",
+    ),
+    min_bits_per_subs: int = typer.Option(1),
+    max_bits_per_subs: int = typer.Option(16),
+    percent_var_explained: float = typer.Option(1),
 ):
     print(f"Loading dataset: {dataset}...")
     if dataset == "dummy":
@@ -28,6 +49,17 @@ def run(
     elif method == "sq":
         print("Fitting SQ...")
         model = ScalarQuantizer()
+    elif method == "opq":
+        B = int(math.ceil(math.log2(num_clusters)))
+        assert 1 << B == num_clusters, f"number of clusters for FAISS OPQ should be a integer power of 2"
+        print(f"Fitting OPQ (M={num_chunks} B={B})")
+        model = OptimizedProductQuantizer(num_chunks, B)
+    elif method == "rabitq":
+        print(f"Fitting RaBitQ")
+        model = RaBitQuantizer(MetricType[distance_metric])
+    elif method == "vaq":
+        print(f"Fitting VAQ (bit_budget={num_clusters}, subspace_num={num_chunks}, min_bits_per_subs={min_bits_per_subs}, max_bits_per_subs={max_bits_per_subs}, percent_var_explained={percent_var_explained}...")
+        model = VarianceAdaptiveQuantizer(num_clusters, num_chunks, min_bits_per_subs, max_bits_per_subs, percent_var_explained)
     else:
         raise ValueError(f"Unsupported method: {method}")
 
@@ -35,13 +67,10 @@ def run(
     model.fit(X)
     X_compressed = model.compress(X)
 
-    distortion = compute_distortion(X, X_compressed, model)
-    compression = model.get_compression_ratio(X)
-
-    metrics = {
-        "distortion": distortion,
-        "compression": compression,
-    }
+    metrics = dict()
+    metrics["compression"] = model.get_compression_ratio(X, X_compressed)
+    if with_distortion:
+        metrics["distortion"] = compute_distortion(X, X_compressed, model)
 
     if with_recall:
         recall_metrics = evaluate_recall(data, model)
