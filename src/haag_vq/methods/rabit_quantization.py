@@ -15,7 +15,6 @@ class RaBitQuantizer(BaseQuantizer):
         Args:
             metric_type (MetricType): Distance metric type enum for FAISS.
         """
-        print(metric_type, type(metric_type))
         self.metric_type = metric_type
         self.rabitq: faiss.RaBitQuantizer = None
 

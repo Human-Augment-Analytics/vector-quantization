@@ -2,11 +2,17 @@ import click
 import math
 import typer
 
-from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.methods.product_quantization import ProductQuantizer
-from haag_vq.methods.rabit_quantization import RaBitQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
-from haag_vq.methods.variance_adaptive_quantization import VarianceAdaptiveQuantizer
+try:
+    from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
+    from haag_vq.methods.rabit_quantization import RaBitQuantizer
+except Exception:
+    pass  # depends on the faiss module built from https://github.com/facebookresearch/faiss.git
+try:
+    from haag_vq.methods.variance_adaptive_quantization import VarianceAdaptiveQuantizer
+except Exception:
+    pass  # depends on pyvaq.so built from https://github.com/SichaoYang/VAQ.git
 from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.faiss import MetricType
 from haag_vq.metrics.recall import evaluate_recall
@@ -49,8 +55,10 @@ def run(
         print(f"Fitting OPQ (M={num_chunks} B={B})")
         model = OptimizedProductQuantizer(num_chunks, B)
     elif method == "rabitq":
+        print(f"Fitting RaBitQ")
         model = RaBitQuantizer(MetricType[distance_metric])
     elif method == "vaq":
+        print(f"Fitting VAQ (bit_budget={num_clusters}, subspace_num={num_chunks}, min_bits_per_subs={min_bits_per_subs}, max_bits_per_subs={max_bits_per_subs}, percent_var_explained={percent_var_explained}...")
         model = VarianceAdaptiveQuantizer(num_clusters, num_chunks, min_bits_per_subs, max_bits_per_subs, percent_var_explained)
     else:
         raise ValueError(f"Unsupported method: {method}")
