@@ -1,3 +1,5 @@
 numpy
 scikit-learn
 typer
+datasets
+sentence-transformers
