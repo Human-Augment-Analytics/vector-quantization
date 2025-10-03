@@ -85,12 +85,12 @@ def _load_vec_file(path: PathLike, value_dtype: np.dtype) -> np.ndarray:
 
 
 def load_fvecs(path: PathLike) -> np.ndarray:
-    """Read ``.fvecs`` file into ``float32`` matrix."""
+    """Read `.fvecs` file into `float32` matrix."""
     return _load_vec_file(path, np.float32)
 
 
 def load_ivecs(path: PathLike) -> np.ndarray:
-    """Read ``.ivecs`` file into ``int32`` matrix."""
+    """Read `.ivecs` file into `int32` matrix."""
     return _load_vec_file(path, np.int32)
 
 
@@ -129,16 +129,106 @@ def _infer_dimensionality(model: BaseQuantizer) -> int:
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
 
 
+def _normalize_training_vectors(training_vectors: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """Ensure training vectors are 2D when provided."""
+    if training_vectors is None:
+        return None
+    arr = np.asarray(training_vectors)
+    if arr.ndim != 2:
+        raise ValueError("training_vectors must be a 2D array")
+    return arr
+
+
+def _estimate_codebook_size(model: BaseQuantizer) -> Optional[int]:
+    """Best-effort estimate of codebook cardinality when no training data is supplied."""
+    if isinstance(model, ProductQuantizer):
+        return model.num_chunks * model.num_clusters
+    if isinstance(model, ScalarQuantizer):
+        if model.min is None or model.max is None:
+            return None
+        return 2
+    return None
+
+
+def _suggest_ivf_nlist(model: BaseQuantizer, training_vectors: Optional[np.ndarray]) -> int:
+    """Heuristic for selecting the number of IVF lists."""
+    training_count: Optional[int] = None
+    if training_vectors is not None:
+        training_count = int(training_vectors.shape[0])
+    if training_count is None or training_count <= 0:
+        training_count = _estimate_codebook_size(model)
+    if training_count is None or training_count <= 0:
+        return 1
+    max_lists = max(1, min(training_count, 65536))
+    guess = int(round(math.sqrt(training_count)))
+    guess = max(1, guess)
+    return min(max_lists, guess)
+
+
+def _suggest_ivf_nprobe(nlist: int) -> int:
+    """Heuristic for setting `nprobe` when using IVF indexes."""
+    if nlist <= 0:
+        return 1
+    guess = int(round(math.sqrt(nlist)))
+    return max(1, min(nlist, guess))
+
+
 def build_faiss_index(
     model: BaseQuantizer,
     *,
     index_key: Optional[str] = None,
     metric: int = faiss.METRIC_L2,
+    training_vectors: Optional[np.ndarray] = None,
+    use_ivf: bool = True,
+    nlist: Optional[int] = None,
+    nprobe: Optional[int] = None,
 ) -> faiss.Index:
-    """Create a FAISS index for a quantizer using ``index_factory``."""
+    """Create a FAISS index for a quantizer, optionally wrapping it with IVF.
+
+    Args:
+        model: Trained quantizer providing dimensionality details.
+        index_key: Optional explicit FAISS factory key. When supplied, the key is
+            used as-is and IVF heuristics are skipped.
+        metric: FAISS distance metric constant, defaults to `METRIC_L2`.
+        training_vectors: Optional matrix used to derive IVF parameters (e.g.,
+            `nlist`). When omitted, heuristics fall back to model metadata.
+        use_ivf: Whether to prepend an IVF coarse quantizer to the factory key.
+        nlist: Explicit override for the number of IVF lists. Must be positive.
+        nprobe: Optional override for `index.nprobe` when building IVF indexes.
+
+    Returns:
+        A FAISS index instance configured for the provided quantizer.
+    """
     dim = _infer_dimensionality(model)
+    training_array = _normalize_training_vectors(training_vectors)
+
     factory_key = index_key or _default_index_key(model)
-    return faiss.index_factory(dim, factory_key, metric)
+
+    if use_ivf and index_key is None and not factory_key.upper().startswith("IVF"):
+        if nlist is None:
+            inferred_nlist = _suggest_ivf_nlist(model, training_array)
+        else:
+            if nlist <= 0:
+                raise ValueError("nlist must be positive when provided")
+            inferred_nlist = int(nlist)
+        if training_array is not None and training_array.shape[0] > 0:
+            inferred_nlist = min(inferred_nlist, int(training_array.shape[0]))
+        inferred_nlist = max(1, inferred_nlist)
+        factory_key = f"IVF{inferred_nlist},{factory_key}"
+
+    index = faiss.index_factory(dim, factory_key, metric)
+
+    ivf_base = getattr(faiss, "IndexIVF", None)
+    if ivf_base is not None and isinstance(index, ivf_base):
+        if nprobe is None:
+            inferred_nprobe = _suggest_ivf_nprobe(index.nlist)
+        else:
+            if nprobe <= 0:
+                raise ValueError("nprobe must be positive when provided")
+            inferred_nprobe = int(nprobe)
+        index.nprobe = max(1, min(index.nlist, inferred_nprobe))
+
+    return index
 
 
 def export_codebook(
@@ -157,7 +247,11 @@ def export_codebook(
     codebook = _extract_codebook(model)
     codebook_path = write_fvecs(output_path / codebook_filename, codebook)
 
-    index = build_faiss_index(model, index_key=index_key)
+    index = build_faiss_index(
+        model,
+        index_key=index_key,
+        training_vectors=codebook,
+    )
 
     result: dict[str, Union[Path, faiss.Index, np.ndarray]] = {
         "codebook": codebook_path,
@@ -183,21 +277,21 @@ def query_codebook(
     metric: int = faiss.METRIC_L2,
     index_key: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Search the exported codebook for the closest entries to ``queries``.
+    """Search the exported codebook for the closest entries to `queries`.
 
     Args:
-        queries: Query vectors shaped ``(N, D)`` or ``(D,)``.
+        queries: Query vectors shaped `(N, D)` or `(D,)`.
         model: Optional trained quantizer. If provided, its configuration is used
             to instantiate the FAISS index via :func:`build_faiss_index`.
-        codebook_vectors: Preloaded codebook vectors (``float32`` matrix).
-        codebook_path: Path to ``.fvecs`` file storing the codebook. Used when
-            ``codebook_vectors`` is not supplied.
+        codebook_vectors: Preloaded codebook vectors (`float32` matrix).
+        codebook_path: Path to `.fvecs` file storing the codebook. Used when
+            `codebook_vectors` is not supplied.
         topk: Number of nearest codebook entries to retrieve.
-        metric: FAISS distance metric constant (defaults to ``METRIC_L2``).
-        index_key: Optional override for FAISS factory key when ``model`` is set.
+        metric: FAISS distance metric constant (defaults to `METRIC_L2`).
+        index_key: Optional override for FAISS factory key when `model` is set.
 
     Returns:
-        Tuple ``(distances, indices)`` from ``faiss.Index.search``.
+        Tuple `(distances, indices)` from `faiss.Index.search`.
     """
     if codebook_vectors is None:
         if codebook_path is None:
@@ -227,7 +321,12 @@ def query_codebook(
     topk = min(topk, num_entries)
 
     if model is not None:
-        index = build_faiss_index(model, index_key=index_key, metric=metric)
+        index = build_faiss_index(
+            model,
+            index_key=index_key,
+            metric=metric,
+            training_vectors=codebook_vectors,
+        )
     else:
         if metric == faiss.METRIC_L2:
             index = faiss.IndexFlatL2(dim)

@@ -1,4 +1,5 @@
 import numpy as np
+import faiss
 
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
 from haag_vq.utils.faiss_export import export_codebook, query_codebook
@@ -59,3 +60,24 @@ def test_query_codebook_from_disk(tmp_path):
     assert indices[0, 0] == 0
     # Second query is closer to the max vector (index 1)
     assert indices[1, 0] == 1
+
+
+def test_export_codebook_uses_ivf(tmp_path):
+    data = np.array(
+        [
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [2.0, 2.0],
+        ],
+        dtype=np.float32,
+    )
+    quantizer = ScalarQuantizer()
+    quantizer.fit(data)
+
+    export_result = export_codebook(quantizer, tmp_path)
+    index = export_result["index"]
+
+    ivf_base = getattr(faiss, "IndexIVF")
+    assert isinstance(index, ivf_base)
+    assert index.nlist >= 1
+    assert 1 <= index.nprobe <= index.nlist
