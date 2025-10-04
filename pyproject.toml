@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haag-vector-quantization"
-version = "0.1.0"
+version = "0.3.0"
 description = "Benchmarking framework for vector quantization methods (PQ, SQ, etc.)"
 authors = [
   { name = "David Levy", email = "dlevy8@gatech.edu" }
@@ -16,7 +16,10 @@ license = "MIT"
 dependencies = [
   "numpy",
   "scikit-learn",
-  "typer[all]"
+  "typer[all]",
+  "datasets",
+  "sentence-transformers",
+  "matplotlib"
 ]
 
 [project.scripts]

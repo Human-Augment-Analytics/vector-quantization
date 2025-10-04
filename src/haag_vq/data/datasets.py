@@ -25,7 +25,9 @@ class Dataset:
             # NOTE: This calculates the full distance matrix between queries and vectors,
             # which can be memory-intensive. For large datasets, a more efficient
             # approach (like k-nearest neighbor search) might be needed.
-            self.ground_truth = distance_metric(self.queries, self.vectors)
+            dist_matrix = distance_metric(self.queries, self.vectors)
+            # Sort distances to get ground truth nearest neighbor indices
+            self.ground_truth = dist_matrix.argsort(axis=1)
         else:
             assert num_queries <= len(ground_truth)
             self.ground_truth = ground_truth[:num_queries]
