@@ -1,4 +1,5 @@
 from pathlib import Path
+from time import perf_counter
 
 import typer
 
@@ -38,7 +39,9 @@ def run(
         raise ValueError(f"Unsupported method: {method}")
 
     X = data.vectors
+    fit_start = perf_counter()
     model.fit(X)
+    fit_time = perf_counter() - fit_start
 
     X_compressed, compression_time = time_compress(model, X)
     X_reconstructed, decompression_time = time_decompress(model, X_compressed)
@@ -49,6 +52,7 @@ def run(
         model
     )
     compression = model.get_compression_ratio(X)
+    quantization_time = fit_time + compression_time
 
     try:
         export_result = model.save_codebooks(
@@ -71,10 +75,13 @@ def run(
     metrics = {
         "distortion": distortion,
         "compression": compression,
+        "fit_latency_ms": fit_time * 1000.0,
         "compression_latency_ms": compression_time * 1000.0,
         "decompression_latency_ms": decompression_time * 1000.0,
+        "quantization_latency_ms": quantization_time * 1000.0,
     }
 
+    qps_metrics = None
     if codebook_vectors is not None:
         try:
             qps_metrics = measure_qps(

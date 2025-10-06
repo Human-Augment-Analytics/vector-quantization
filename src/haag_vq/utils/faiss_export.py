@@ -247,17 +247,20 @@ def export_codebook(
     codebook = _extract_codebook(model)
     codebook_path = write_fvecs(output_path / codebook_filename, codebook)
 
-    index = build_faiss_index(
-        model,
-        index_key=index_key,
-        training_vectors=codebook,
-    )
+    index: Optional[faiss.Index] = None
+    if not isinstance(model, ProductQuantizer):
+        index = build_faiss_index(
+            model,
+            index_key=index_key,
+            training_vectors=codebook,
+        )
 
     result: dict[str, Union[Path, faiss.Index, np.ndarray]] = {
         "codebook": codebook_path,
-        "index": index,
         "codebook_vectors": codebook,
     }
+    if index is not None:
+        result["index"] = index
 
     if codes is not None:
         codes_matrix = np.asarray(codes, dtype=np.int32)
@@ -265,6 +268,63 @@ def export_codebook(
         result["codes"] = codes_path
 
     return result
+
+
+
+
+def _query_product_codebook(
+    queries: np.ndarray,
+    model: ProductQuantizer,
+    codebook_vectors: np.ndarray,
+    topk: int,
+    metric: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """FAISS search tailored for ProductQuantizer codebooks."""
+    if model.chunk_dim is None:
+        raise ValueError("ProductQuantizer has no chunk_dim; call fit first")
+    chunk_dim = int(model.chunk_dim)
+    num_chunks = int(model.num_chunks)
+    num_clusters = int(model.num_clusters)
+    expected_rows = num_chunks * num_clusters
+    if codebook_vectors.shape != (expected_rows, chunk_dim):
+        raise ValueError(
+            "ProductQuantizer codebook has unexpected shape; expected "
+            f"({expected_rows}, {chunk_dim}) but received {codebook_vectors.shape}"
+        )
+    if queries.shape[1] != chunk_dim * num_chunks:
+        raise ValueError(
+            "Query dimensionality does not match ProductQuantizer. "
+            f"Expected {chunk_dim * num_chunks} but received {queries.shape[1]}"
+        )
+    per_chunk_topk = min(topk, num_clusters)
+    if per_chunk_topk <= 0:
+        raise ValueError("topk must be positive and <= number of clusters")
+    query_chunks = queries.reshape(queries.shape[0], num_chunks, chunk_dim)
+    codebook_chunks = codebook_vectors.reshape(num_chunks, num_clusters, chunk_dim)
+    if metric == faiss.METRIC_L2:
+        index_factory = faiss.IndexFlatL2
+    elif metric == faiss.METRIC_INNER_PRODUCT:
+        index_factory = faiss.IndexFlatIP
+    else:
+        raise ValueError(
+            "ProductQuantizer queries currently support only METRIC_L2 "
+            "and METRIC_INNER_PRODUCT"
+        )
+    distance_chunks = []
+    index_chunks = []
+    for chunk_idx in range(num_chunks):
+        chunk_vectors = np.ascontiguousarray(codebook_chunks[chunk_idx])
+        if chunk_vectors.size == 0:
+            raise ValueError("ProductQuantizer codebook chunk is empty")
+        index = index_factory(chunk_dim)
+        index.add(chunk_vectors)
+        chunk_queries = np.ascontiguousarray(query_chunks[:, chunk_idx, :])
+        d, idx = index.search(chunk_queries, per_chunk_topk)
+        distance_chunks.append(d)
+        index_chunks.append(idx + chunk_idx * num_clusters)
+    distances = np.concatenate(distance_chunks, axis=1)
+    indices = np.concatenate(index_chunks, axis=1)
+    return distances, indices
 
 
 def query_codebook(
@@ -286,38 +346,54 @@ def query_codebook(
         codebook_vectors: Preloaded codebook vectors (`float32` matrix).
         codebook_path: Path to `.fvecs` file storing the codebook. Used when
             `codebook_vectors` is not supplied.
-        topk: Number of nearest codebook entries to retrieve.
+        topk: Number of nearest codebook entries to retrieve. For
+            :class:`ProductQuantizer` models this value is applied per chunk and
+            the returned arrays are flattened across chunks.
         metric: FAISS distance metric constant (defaults to `METRIC_L2`).
         index_key: Optional override for FAISS factory key when `model` is set.
 
     Returns:
-        Tuple `(distances, indices)` from `faiss.Index.search`.
+        Tuple `(distances, indices)` from the FAISS search routine.
     """
     if codebook_vectors is None:
         if codebook_path is None:
             raise ValueError("Provide either codebook_vectors or codebook_path")
         codebook_vectors = load_fvecs(codebook_path)
-    codebook_vectors = np.asarray(codebook_vectors, dtype=np.float32)
+    codebook_vectors = np.ascontiguousarray(codebook_vectors, dtype=np.float32)
 
     if codebook_vectors.ndim != 2:
         raise ValueError("Codebook vectors must be 2D")
-
-    num_entries, dim = codebook_vectors.shape
-    if num_entries == 0:
-        raise ValueError("Codebook is empty; cannot run queries")
 
     queries = np.asarray(queries, dtype=np.float32)
     if queries.ndim == 1:
         queries = queries.reshape(1, -1)
     if queries.ndim != 2:
         raise ValueError("Queries must be a 1D or 2D array")
+    if queries.size == 0:
+        raise ValueError("No queries provided for search")
+
+    if topk <= 0:
+        raise ValueError("topk must be positive")
+    topk = int(topk)
+
+    if isinstance(model, ProductQuantizer):
+        return _query_product_codebook(
+            queries,
+            model,
+            codebook_vectors,
+            topk,
+            metric,
+        )
+
+    num_entries, dim = codebook_vectors.shape
+    if num_entries == 0:
+        raise ValueError("Codebook is empty; cannot run queries")
+
     if queries.shape[1] != dim:
         raise ValueError(
             f"Query dimensionality ({queries.shape[1]}) does not match codebook ({dim})"
         )
 
-    if topk <= 0:
-        raise ValueError("topk must be positive")
     topk = min(topk, num_entries)
 
     if model is not None:

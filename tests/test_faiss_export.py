@@ -2,6 +2,7 @@ import numpy as np
 import faiss
 
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
+from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.utils.faiss_export import export_codebook, query_codebook
 
 
@@ -81,3 +82,28 @@ def test_export_codebook_uses_ivf(tmp_path):
     assert isinstance(index, ivf_base)
     assert index.nlist >= 1
     assert 1 <= index.nprobe <= index.nlist
+
+def test_query_codebook_product_quantizer(tmp_path):
+    rng = np.random.default_rng(0)
+    data = rng.standard_normal((32, 8), dtype=np.float32)
+    quantizer = ProductQuantizer(num_chunks=2, num_clusters=4)
+    quantizer.fit(data)
+
+    export_result = export_codebook(quantizer, tmp_path)
+    codebook_vectors = export_result["codebook_vectors"]
+
+    queries = data[:5]
+    distances, indices = query_codebook(
+        queries,
+        model=quantizer,
+        codebook_vectors=codebook_vectors,
+        topk=2,
+    )
+
+    assert distances.shape == (queries.shape[0], quantizer.num_chunks * 2)
+    assert indices.shape == (queries.shape[0], quantizer.num_chunks * 2)
+    chunk0 = indices[:, :2]
+    chunk1 = indices[:, 2:]
+    assert np.all(chunk0 < quantizer.num_clusters)
+    assert np.all((chunk1 >= quantizer.num_clusters) & (chunk1 < 2 * quantizer.num_clusters))
+
