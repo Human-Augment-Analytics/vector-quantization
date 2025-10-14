@@ -9,7 +9,10 @@ The results are automatically logged to the database for later analysis and visu
 """
 
 import itertools
-from typing import Dict, List, Any
+from time import perf_counter
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 import typer
 import uuid
 from datetime import datetime
@@ -20,6 +23,7 @@ from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.pairwise_distortion import compute_pairwise_distortion
 from haag_vq.metrics.rank_distortion import compute_rank_distortion
 from haag_vq.metrics.recall import evaluate_recall
+from haag_vq.metrics.performance import measure_qps, time_compress, time_decompress
 from haag_vq.data.datasets import Dataset, load_dummy_dataset, load_huggingface_dataset
 from haag_vq.utils.run_logger import log_run
 
@@ -98,7 +102,7 @@ def sweep(
             with_rank=with_rank,
             num_pairs=num_pairs,
             rank_k=rank_k,
-            sweep_id=sweep_id
+            sweep_id=sweep_id,
         )
 
     print("\n" + "=" * 70)
@@ -123,7 +127,7 @@ def _generate_pq_configs(chunks: str, clusters: str) -> List[Dict[str, Any]]:
         configs.append({
             "name": f"PQ(chunks={num_chunks}, clusters={num_clusters})",
             "num_chunks": num_chunks,
-            "num_clusters": num_clusters
+            "num_clusters": num_clusters,
         })
 
     return configs
@@ -145,17 +149,31 @@ def _generate_sq_configs(bits: str) -> List[Dict[str, Any]]:
             continue
         configs.append({
             "name": f"SQ({num_bits}-bit)",
-            "num_bits": num_bits
+            "num_bits": num_bits,
         })
 
     # If no valid configs, add default 8-bit
     if not configs:
         configs.append({
             "name": "SQ(8-bit)",
-            "num_bits": 8
+            "num_bits": 8,
         })
 
     return configs
+
+
+def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
+    """Return codebook vectors for QPS measurement without touching disk."""
+    if isinstance(model, ProductQuantizer):
+        if not getattr(model, "codebooks", None):
+            return None
+        chunks = [np.asarray(cb, dtype=np.float32) for cb in model.codebooks]
+        return np.concatenate(chunks, axis=0)
+    if isinstance(model, ScalarQuantizer):
+        if model.min is None or model.max is None:
+            return None
+        return np.stack([model.min, model.max]).astype(np.float32)
+    return None
 
 
 def _run_single_config(
@@ -168,14 +186,14 @@ def _run_single_config(
     with_rank: bool,
     num_pairs: int,
     rank_k: int,
-    sweep_id: str = None
-):
+    sweep_id: str = None,
+) -> None:
     """Run benchmark for a single configuration."""
     # Create model based on method and config
     if method == "pq":
         model = ProductQuantizer(
             num_chunks=config["num_chunks"],
-            num_clusters=config["num_clusters"]
+            num_clusters=config["num_clusters"],
         )
     elif method == "sq":
         # SQ currently has no hyperparameters, but config is logged for consistency
@@ -185,35 +203,55 @@ def _run_single_config(
 
     # Fit and compress
     X = data.vectors
+
+    fit_start = perf_counter()
     model.fit(X)
-    X_compressed = model.compress(X)
+    fit_time = perf_counter() - fit_start
 
-    # Compute metrics
-    metrics = {}
-
+    X_compressed, compression_time = time_compress(model, X)
+    X_reconstructed, decompression_time = time_decompress(model, X_compressed)
     # 1. Reconstruction distortion (MSE)
     reconstruction_distortion = compute_distortion(X, X_compressed, model)
     compression_ratio = model.get_compression_ratio(X)
-    metrics["reconstruction_distortion"] = reconstruction_distortion
-    metrics["compression_ratio"] = compression_ratio
+    quantization_time = fit_time + compression_time
+
+    metrics: Dict[str, Any] = {
+        "reconstruction_distortion": reconstruction_distortion,
+        "compression_ratio": compression_ratio,
+        "fit_latency_ms": fit_time * 1000.0,
+        "compression_latency_ms": compression_time * 1000.0,
+        "decompression_latency_ms": decompression_time * 1000.0,
+        "quantization_latency_ms": quantization_time * 1000.0,
+    }
 
     # 2. Pairwise distance distortion
     if with_pairwise:
         pairwise_dist = compute_pairwise_distortion(
-            X, X_compressed, model, num_pairs=num_pairs
+            X, X_compressed, model, num_pairs=num_pairs,
         )
         metrics["pairwise_distortion_mean"] = pairwise_dist["mean"]
         metrics["pairwise_distortion_median"] = pairwise_dist["median"]
         metrics["pairwise_distortion_max"] = pairwise_dist["max"]
-
+    else:
+        pairwise_dist = None
     # 3. Rank distortion
     if with_rank:
-        rank_dist = compute_rank_distortion(
-            data, model, k=rank_k
-        )
+        rank_dist = compute_rank_distortion(data, model, k=rank_k)
         metrics[f"rank_distortion@{rank_k}"] = rank_dist
+    else:
+        rank_dist = None
 
-    # 4. Recall
+    #4. Speed metrics
+    codebook_vectors = _get_codebook_vectors(model)
+    qps_metrics = None
+    qps_metrics = measure_qps(
+                data.queries,
+                model=model,
+                codebook_vectors=codebook_vectors,
+            )
+    metrics.update(qps_metrics)
+
+    # 5. Recall
     if with_recall:
         recall_metrics = evaluate_recall(data, model, num_queries=100)
         metrics.update(recall_metrics)
@@ -222,11 +260,23 @@ def _run_single_config(
     log_run(method=method, dataset=dataset, metrics=metrics, config=config, sweep_id=sweep_id)
 
     # Print summary
-    print(f"  Compression ratio:    {compression_ratio:.2f}x")
-    print(f"  Reconstruction MSE:   {reconstruction_distortion:.4f}")
+    print(f"  Compression ratio:           {compression_ratio:.2f}x")
+    print(f"  Reconstruction MSE:          {reconstruction_distortion:.4f}")
+    print(f"  Fit latency (ms):            {metrics['fit_latency_ms']:.2f}")
+    print(f"  Compression latency (ms):    {metrics['compression_latency_ms']:.2f}")
+    print(f"  Quantization latency (ms):   {metrics['quantization_latency_ms']:.2f}")
+    print(f"  Decompression latency (ms):  {metrics['decompression_latency_ms']:.2f}")
+
     if with_pairwise:
-        print(f"  Pairwise distortion:  {pairwise_dist['mean']:.4f} (mean)")
+        print(f"  Pairwise distortion (mean):  {pairwise_dist['mean']:.4f}")
     if with_rank:
-        print(f"  Rank distortion@{rank_k}:   {rank_dist:.4f}")
+        print(f"  Rank distortion@{rank_k}:       {rank_dist:.4f}")
+    if "qps" in metrics:
+        print(f"  QPS:                         {metrics['qps']:.2f}")
+        if "avg_query_latency_ms" in metrics:
+            print(f"  Avg query latency (ms):     {metrics['avg_query_latency_ms']:.4f}")
     if with_recall:
-        print(f"  Recall@10:            {metrics['recall@10']:.4f}")
+        recall_key = "recall@10"
+        if recall_key in metrics:
+            print(f"  Recall@10:                  {metrics[recall_key]:.4f}")
+

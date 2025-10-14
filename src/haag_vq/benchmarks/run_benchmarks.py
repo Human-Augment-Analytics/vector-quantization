@@ -1,11 +1,18 @@
+from pathlib import Path
+from time import perf_counter
+
 import typer
 
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
 from haag_vq.metrics.distortion import compute_distortion
+from haag_vq.metrics.performance import measure_qps, time_compress, time_decompress
 from haag_vq.metrics.recall import evaluate_recall
 from haag_vq.data.datasets import Dataset, load_dummy_dataset
 from haag_vq.utils.run_logger import log_run
+
+CODEBOOKS_DIR = Path(__file__).resolve().parents[3] / "codebooks"
+
 
 def run(
     method: str = typer.Option("pq", help="Compression method: pq or sq"),
@@ -32,16 +39,59 @@ def run(
         raise ValueError(f"Unsupported method: {method}")
 
     X = data.vectors
+    fit_start = perf_counter()
     model.fit(X)
-    X_compressed = model.compress(X)
+    fit_time = perf_counter() - fit_start
 
-    distortion = compute_distortion(X, X_compressed, model)
+    X_compressed, compression_time = time_compress(model, X)
+    X_reconstructed, decompression_time = time_decompress(model, X_compressed)
+
+    distortion = compute_distortion(
+        X,
+        X_compressed,
+        model
+    )
     compression = model.get_compression_ratio(X)
+    quantization_time = fit_time + compression_time
+
+    try:
+        export_result = model.save_codebooks(
+            codes=X_compressed,
+            output_dir=CODEBOOKS_DIR,
+            codebook_filename=f"{method}_{dataset}_codebook.fvecs",
+            codes_filename=f"{method}_{dataset}_codes.ivecs",
+        )
+        print(f"Saved codebook to: {export_result['codebook']}")
+        if "codes" in export_result:
+            print(f"Saved codes to   : {export_result['codes']}")
+        codebook_vectors = export_result.get("codebook_vectors")
+    except RuntimeError as exc:
+        print(f"Warning: FAISS export skipped ({exc})")
+        codebook_vectors = None
+    except Exception as exc:
+        print(f"Warning: Failed to export codebook ({exc})")
+        codebook_vectors = None
 
     metrics = {
         "distortion": distortion,
         "compression": compression,
+        "fit_latency_ms": fit_time * 1000.0,
+        "compression_latency_ms": compression_time * 1000.0,
+        "decompression_latency_ms": decompression_time * 1000.0,
+        "quantization_latency_ms": quantization_time * 1000.0,
     }
+
+    qps_metrics = None
+    if codebook_vectors is not None:
+        try:
+            qps_metrics = measure_qps(
+                data.queries,
+                model=model,
+                codebook_vectors=codebook_vectors,
+            )
+            metrics.update(qps_metrics)
+        except Exception as exc:
+            print(f"Warning: Failed to measure QPS ({exc})")
 
     if with_recall:
         recall_metrics = evaluate_recall(data, model)
