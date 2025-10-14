@@ -61,6 +61,95 @@ This work is part of the HAAG "Methods Unit", with a focus on:
 
 ---
 
+## 🚀 Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repo-url>
+cd vector-quantization
+
+# Install in editable mode
+pip install -e .
+```
+
+### Run a Benchmark
+
+```bash
+# Simple benchmark
+vq-benchmark run --dataset dummy --method pq
+
+# With recall metrics
+vq-benchmark run \
+    --dataset dummy \
+    --num-samples 10000 \
+    --method pq \
+    --num-chunks 8 \
+    --num-clusters 256 \
+    --with-recall
+```
+
+### Run a Parameter Sweep
+
+```bash
+vq-benchmark sweep \
+    --method pq \
+    --dataset dummy \
+    --pq-chunks "4,8,16" \
+    --pq-clusters "128,256,512"
+```
+
+### Visualize Results
+
+```bash
+vq-benchmark plot
+```
+
+---
+
+## 📖 Documentation
+
+### User Guides
+- **[USAGE.md](documentation/USAGE.md)** - Complete CLI reference
+- **[SLURM_GUIDE.md](documentation/SLURM_GUIDE.md)** - ICE cluster guide
+- **[SLURM_SUPPORT_PLAN.md](documentation/SLURM_SUPPORT_PLAN.md)** - Production readiness
+
+### Developer Guides
+- **[ADDING_NEW_METHODS.md](documentation/ADDING_NEW_METHODS.md)** - How to add quantization methods
+- **[METRICS_GUIDE.md](documentation/METRICS_GUIDE.md)** - Understanding metrics
+- **[PARAMETER_SWEEP_GUIDE.md](documentation/PARAMETER_SWEEP_GUIDE.md)** - Parameter sweep details
+
+---
+
+## 🖥️ CLI Commands
+
+```bash
+vq-benchmark run           # Run single benchmark
+vq-benchmark sweep         # Run parameter sweep
+vq-benchmark precompute-gt # Precompute ground truth
+vq-benchmark plot          # Visualize results
+```
+
+---
+
+## 🏔️ Running on ICE Cluster
+
+```bash
+# 1. Precompute ground truth (one-time)
+sbatch slurm/precompute_gt.slurm
+
+# 2. Run sweeps
+sbatch slurm/sweep.slurm
+
+# 3. Visualize locally
+vq-benchmark plot
+```
+
+See [SLURM_GUIDE.md](documentation/SLURM_GUIDE.md) for detailed instructions.
+
+---
+
 ## 🗂 Repository Structure
 
 _TBD: As code and benchmark notebooks are added, include directory structure and setup instructions._

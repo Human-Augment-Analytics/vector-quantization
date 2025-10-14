@@ -7,19 +7,26 @@ import shlex
 import json
 import numpy as np
 
-def log_run(method, dataset, metrics: dict, config: dict = None, sweep_id: str = None):
+def log_run(method, dataset, metrics: dict, config: dict = None, sweep_id: str = None, db_path: str = None):
     """
     Log a benchmark run to the SQLite database.
 
     Args:
         method: Quantization method name (e.g., "pq", "sq")
-        dataset: Dataset name (e.g., "dummy", "huggingface")
+        dataset: Dataset name (e.g., "dummy", "huggingface", "msmarco")
         metrics: Dictionary of metric values
         config: Optional configuration dictionary (e.g., num_chunks, num_clusters)
         sweep_id: Optional sweep identifier to group related runs together
+        db_path: Optional path to database (default: logs/benchmark_runs.db or $DB_PATH)
     """
-    os.makedirs("logs", exist_ok=True)
-    db_path = "logs/benchmark_runs.db"
+    # Determine database path (priority: param > env var > default)
+    if db_path is None:
+        db_path = os.getenv("DB_PATH", "logs/benchmark_runs.db")
+
+    # Ensure parent directory exists
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
 
     try:
         git_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode().strip()

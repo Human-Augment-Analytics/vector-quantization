@@ -208,3 +208,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Build artifacts (added 2025-10-14)
+build/
+dist/
+*.egg-info/

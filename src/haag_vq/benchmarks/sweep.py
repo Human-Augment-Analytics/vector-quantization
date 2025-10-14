@@ -9,8 +9,10 @@ The results are automatically logged to the database for later analysis and visu
 """
 
 import itertools
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional
+import os
 
 import numpy as np
 import typer
@@ -30,8 +32,8 @@ from haag_vq.utils.run_logger import log_run
 
 def sweep(
     method: str = typer.Option("pq", help="Compression method: pq, sq, etc."),
-    dataset: str = typer.Option("dummy", help="Dataset name: dummy or huggingface"),
-    num_samples: int = typer.Option(10000, help="Number of samples for dummy dataset"),
+    dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
+    num_samples: int = typer.Option(10000, help="Number of samples to use"),
     dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
     # PQ-specific sweep parameters
     pq_chunks: str = typer.Option("8,16,32", help="[PQ only] Comma-separated chunk values"),
@@ -44,6 +46,10 @@ def sweep(
     with_rank: bool = typer.Option(True, help="Compute rank distortion"),
     num_pairs: int = typer.Option(1000, help="Number of random pairs for pairwise distortion"),
     rank_k: int = typer.Option(10, help="k for rank distortion (top-k neighbors)"),
+    # Path configuration (for SLURM/ICE)
+    ground_truth_path: str = typer.Option(None, help="Path to precomputed ground truth (.npy file)"),
+    codebooks_dir: str = typer.Option(None, help="Directory to save codebooks (default: ./codebooks or $CODEBOOKS_DIR)"),
+    db_path: str = typer.Option(None, help="Path to SQLite database (default: logs/benchmark_runs.db or $DB_PATH)"),
 ):
     """
     Run parameter sweep to generate compression-distortion trade-off curves.
@@ -58,6 +64,22 @@ def sweep(
         # Sweep on real embeddings
         vq-benchmark sweep --method pq --dataset huggingface
     """
+    # Determine codebooks directory (priority: CLI arg > env var > default)
+    if codebooks_dir is None:
+        codebooks_dir = os.getenv("CODEBOOKS_DIR")
+    if codebooks_dir is None:
+        codebooks_dir = Path(__file__).resolve().parents[3] / "codebooks"
+    else:
+        codebooks_dir = Path(codebooks_dir)
+    codebooks_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load precomputed ground truth if provided
+    precomputed_gt = None
+    if ground_truth_path:
+        print(f"Loading precomputed ground truth from: {ground_truth_path}")
+        precomputed_gt = np.load(ground_truth_path)
+        print(f"   Loaded ground truth shape: {precomputed_gt.shape}")
+
     # Generate unique sweep ID
     sweep_id = f"sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
@@ -70,11 +92,16 @@ def sweep(
     # Load dataset
     print(f"\nLoading dataset: {dataset}...")
     if dataset == "dummy":
+        skip_gt = (precomputed_gt is None) and (num_samples > 100000)
         data = load_dummy_dataset(num_samples=num_samples, dim=dim)
+        if precomputed_gt is not None:
+            data.ground_truth = precomputed_gt
     elif dataset == "huggingface":
         data = load_huggingface_dataset()
+        if precomputed_gt is not None:
+            data.ground_truth = precomputed_gt
     else:
-        raise ValueError(f"Unsupported dataset: {dataset}")
+        raise ValueError(f"Unsupported dataset: {dataset}. Currently supported: dummy, huggingface")
 
     print(f"Dataset shape: {data.vectors.shape}")
 
@@ -187,6 +214,8 @@ def _run_single_config(
     num_pairs: int,
     rank_k: int,
     sweep_id: str = None,
+    codebooks_dir: Path = None,
+    db_path: str = None,
 ) -> None:
     """Run benchmark for a single configuration."""
     # Create model based on method and config
@@ -257,7 +286,7 @@ def _run_single_config(
         metrics.update(recall_metrics)
 
     # Log to database
-    log_run(method=method, dataset=dataset, metrics=metrics, config=config, sweep_id=sweep_id)
+    log_run(method=method, dataset=dataset, metrics=metrics, config=config, sweep_id=sweep_id, db_path=db_path)
 
     # Print summary
     print(f"  Compression ratio:           {compression_ratio:.2f}x")

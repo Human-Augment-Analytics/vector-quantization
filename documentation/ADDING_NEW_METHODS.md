@@ -242,6 +242,17 @@ vq-benchmark plot
 
 ---
 
+## Adding Custom Metrics
+
+If your quantization method requires specialized evaluation metrics beyond the standard ones (reconstruction distortion, pairwise distortion, rank distortion, recall), see [METRICS_GUIDE.md](METRICS_GUIDE.md) for details on:
+
+- Understanding existing metrics
+- Implementing new metric functions
+- Integrating metrics into benchmarks
+- Interpreting metric results
+
+---
+
 ## Complete Example: Lattice Quantization
 
 Here's a full example for a hypothetical Lattice Quantization method:

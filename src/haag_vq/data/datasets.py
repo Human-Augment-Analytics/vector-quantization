@@ -13,24 +13,40 @@ class Dataset:
         ground_truth: Optional[np.ndarray] = None,
         num_queries: int = 100,
         distance_metric: Callable[[np.ndarray, np.ndarray], np.ndarray] = pairwise_distances,
+        skip_ground_truth: bool = False,
     ):
+        """Initialize a Dataset for vector quantization benchmarking.
 
+        Args:
+            vectors: The main dataset vectors (N x D)
+            queries: Optional query vectors (default: use first num_queries from vectors)
+            ground_truth: Optional precomputed ground truth nearest neighbors (num_queries x k)
+            num_queries: Number of queries to use if queries is None
+            distance_metric: Distance metric function (for computing ground truth on-the-fly)
+            skip_ground_truth: If True, don't compute ground truth (for large datasets)
+        """
         self.vectors = vectors
         if queries is None:
             self.queries = vectors[:num_queries]
         else:
             assert num_queries <= len(queries)
             self.queries = queries[:num_queries]
-        if ground_truth is None:
-            # NOTE: This calculates the full distance matrix between queries and vectors,
-            # which can be memory-intensive. For large datasets, a more efficient
-            # approach (like k-nearest neighbor search) might be needed.
-            dist_matrix = distance_metric(self.queries, self.vectors)
-            # Sort distances to get ground truth nearest neighbor indices
-            self.ground_truth = dist_matrix.argsort(axis=1)
-        else:
+
+        if ground_truth is not None:
+            # Use precomputed ground truth
             assert num_queries <= len(ground_truth)
             self.ground_truth = ground_truth[:num_queries]
+        elif skip_ground_truth:
+            # Skip ground truth computation (recall metrics will not be available)
+            self.ground_truth = None
+            print("WARNING: Ground truth computation skipped. Recall metrics will not be available.")
+        else:
+            # Compute ground truth on-the-fly (WARNING: memory-intensive for large datasets!)
+            print(f"Computing ground truth for {len(self.queries)} queries x {len(self.vectors)} vectors...")
+            print("WARNING: This computes full distance matrix and may cause OOM for large datasets!")
+            dist_matrix = distance_metric(self.queries, self.vectors)
+            self.ground_truth = dist_matrix.argsort(axis=1)
+
         self.distance_metric = distance_metric
 
 
