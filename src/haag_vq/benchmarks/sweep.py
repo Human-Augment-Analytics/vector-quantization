@@ -21,6 +21,8 @@ from datetime import datetime
 
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
+from haag_vq.methods.rabit_quantization import RaBitQuantizer
+from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.pairwise_distortion import compute_pairwise_distortion
 from haag_vq.metrics.rank_distortion import compute_rank_distortion
@@ -28,6 +30,9 @@ from haag_vq.metrics.recall import evaluate_recall
 from haag_vq.metrics.performance import measure_qps, time_compress, time_decompress
 from haag_vq.data.datasets import Dataset, load_dummy_dataset, load_huggingface_dataset
 from haag_vq.utils.run_logger import log_run
+
+
+from ..utils.faiss_export import MetricType
 
 
 def sweep(
@@ -40,6 +45,11 @@ def sweep(
     pq_clusters: str = typer.Option("128,256", help="[PQ only] Comma-separated cluster values"),
     # SQ-specific sweep parameters (example for future methods)
     sq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
+    # RabitQ-specific sweep parameters
+    rabitq_metric_type: str = typer.Option("1,23", help="[RabitQ only] Comma-separated metric distance types"),
+    # OPQ-specific sweep parameters
+    opq_quantizers: str = typer.Option("2,3,4,5,6,7,8", help="[OPQ only] Comma-separated number of quantizers"),
+    opq_bits: str = typer.Option("8,16,32", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
     # Evaluation options
     with_recall: bool = typer.Option(True, help="Compute recall metrics"),
     with_pairwise: bool = typer.Option(True, help="Compute pairwise distance distortion"),
@@ -110,8 +120,12 @@ def sweep(
         configs = _generate_pq_configs(pq_chunks, pq_clusters)
     elif method == "sq":
         configs = _generate_sq_configs(sq_bits)
+    elif method == "rabitq":
+        configs = _generate_rabitq_configs(rabitq_metric_type)
+    elif method == "opq":
+        configs = _generate_opq_configs(opq_quantizers, opq_bits)
     else:
-        raise ValueError(f"Unknown method: {method}. Supported: pq, sq")
+        raise ValueError(f"Unknown method: {method}. Supported: pq, sq, rabitq, opq")
 
     print(f"\nRunning {len(configs)} configurations...")
     print("-" * 70)
@@ -189,6 +203,35 @@ def _generate_sq_configs(bits: str) -> List[Dict[str, Any]]:
     return configs
 
 
+def _generate_rabitq_configs(metric_type: str) -> List[Dict[str, Any]]:
+    "Generate RabitQ parameters config"
+    configs = []
+    metric_types = [MetricType(x.strip()) for x in metric_type.split(",")]
+
+    for mt in metric_types:
+        configs.append({
+            "name": f"RabitQ(metric={mt})",
+            "metric_type": mt,
+        })
+    
+    return configs
+
+def _generate_opq_configs(subquantizers: str, bits: str) -> List[Dict[str, Any]]:
+    "Generate OPQ parameters config"
+    configs = []
+    num_subquantizers = [int(x.strip()) for x in subquantizers.split(",")]
+    num_bits = [int(x.strip()) for x in bits.split(",")]
+
+    for m, b in itertools.product(num_subquantizers, num_bits):
+        configs.append({
+            "name": f"OPQ(subquantizers={m}, bits={b})",
+            "subquantizers": m,
+            "bits": b,
+        })
+    
+    return configs
+
+
 def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
     """Return codebook vectors for QPS measurement without touching disk."""
     if isinstance(model, ProductQuantizer):
@@ -227,6 +270,15 @@ def _run_single_config(
     elif method == "sq":
         # SQ currently has no hyperparameters, but config is logged for consistency
         model = ScalarQuantizer()
+    elif method == "rabitq":
+        model = RaBitQuantizer(
+            metric_type=config["metric_type"]
+        )
+    elif method == "opq":
+        model = OptimizedProductQuantizer(
+            M=config["subquantizers"],
+            B=config["bits"]
+        )
     else:
         raise ValueError(f"Unsupported method: {method}")
 
