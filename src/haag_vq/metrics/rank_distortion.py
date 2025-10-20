@@ -63,7 +63,7 @@ def compute_rank_distortion(
         Average rank distortion across all queries (float between 0 and 1)
 
     Example:
-        >>> pq = ProductQuantizer(num_chunks=8, num_clusters=256)
+        >>> pq = ProductQuantizer(M=8, B=8)
         >>> pq.fit(data.vectors)
         >>> rank_dist = compute_rank_distortion(data, pq, k=10)
         >>> print(f"Rank distortion@10: {rank_dist:.4f}")

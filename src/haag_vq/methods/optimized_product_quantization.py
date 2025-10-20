@@ -31,3 +31,15 @@ class OptimizedProductQuantizer(BaseQuantizer):
 
     def decompress(self, compressed: np.ndarray) -> np.ndarray:
         return self.opq.reverse_transform(self.pq.decode(compressed))  # shape: (N, D)
+
+    def get_compression_ratio(self, X: np.ndarray) -> float:
+        """Return compression ratio (original bytes / compressed bytes).
+
+        OPQ applies a rotation (no per-vector storage) and then PQ codes of size M * B/8 bytes.
+        Assumes `float32` inputs.
+        """
+        D = int(X.shape[1])
+        original_size_bytes = D * 4
+        # Same storage as PQ: ceil(M * B / 8) bytes per vector
+        compressed_size_bytes = int((self.M * self.B + 7) // 8)
+        return float(original_size_bytes / compressed_size_bytes)

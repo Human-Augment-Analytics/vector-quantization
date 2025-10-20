@@ -19,26 +19,6 @@ from haag_vq.methods.scalar_quantization import ScalarQuantizer
 
 PathLike = Union[str, Path]
 
-from enum import IntEnum
-
-class MetricType(IntEnum):
-    INNER_PRODUCT = 0  #< maximum inner product search
-    L2 = 1             #< squared L2 search
-    L1 = 2             #< L1 (aka cityblock)
-    Linf = 3           #< infinity distance
-    Lp = 4             #< L_p distance, p is given by a faiss::Index metric_arg
-    # some additional metrics defined in scipy.spatial.distance
-    Canberra = 20
-    BrayCurtis = 21
-    JensenShannon = 22
-    # sum_i(min(a_i, b_i)) / sum_i(max(a_i, b_i)) where a_i, b_i > 0
-    Jaccard = 23
-    # Squared Eucliden distance, ignoring NaNs
-    NaNEuclidean = 24
-    # Gower's distance - numeric dimensions are in [0,1] and categorical dimensions are negative integers
-    GOWER = 25
-
-
 def write_fvecs(path: PathLike, vectors: np.ndarray) -> Path:
     """Write float vectors to a .fvecs file (FAISS binary format)."""
     path = Path(path)
@@ -115,8 +95,10 @@ def load_ivecs(path: PathLike) -> np.ndarray:
 
 def _default_index_key(model: BaseQuantizer) -> str:
     if isinstance(model, ProductQuantizer):
-        bits = int(round(math.log2(model.num_clusters)))
-        return f"PQ{model.num_chunks}x{bits}"  # e.g. PQ8x8
+        # For PQ, the canonical key is PQ{M}x{B}
+        bits = int(getattr(model, "B", int(round(math.log2(getattr(model, "num_clusters"))))) )
+        M = int(getattr(model, "M", getattr(model, "num_chunks")))
+        return f"PQ{M}x{bits}"  # e.g. PQ8x8
     if isinstance(model, ScalarQuantizer):
         return "SQ8"  # 8-bit scalar quantizer
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
@@ -140,7 +122,8 @@ def _infer_dimensionality(model: BaseQuantizer) -> int:
     if isinstance(model, ProductQuantizer):
         if model.chunk_dim is None:
             raise ValueError("ProductQuantizer has no chunk_dim; call fit first")
-        return model.chunk_dim * model.num_chunks
+        M = int(getattr(model, "M", getattr(model, "num_chunks")))
+        return int(model.chunk_dim) * M
     if isinstance(model, ScalarQuantizer):
         if model.min is None:
             raise ValueError("ScalarQuantizer has no min; call fit first")
@@ -161,7 +144,9 @@ def _normalize_training_vectors(training_vectors: Optional[np.ndarray]) -> Optio
 def _estimate_codebook_size(model: BaseQuantizer) -> Optional[int]:
     """Best-effort estimate of codebook cardinality when no training data is supplied."""
     if isinstance(model, ProductQuantizer):
-        return model.num_chunks * model.num_clusters
+        M = int(getattr(model, "M", getattr(model, "num_chunks")))
+        B = int(getattr(model, "B", int(round(math.log2(getattr(model, "num_clusters"))))) )
+        return M * (2 ** B)
     if isinstance(model, ScalarQuantizer):
         if model.min is None or model.max is None:
             return None
@@ -302,8 +287,8 @@ def _query_product_codebook(
     if model.chunk_dim is None:
         raise ValueError("ProductQuantizer has no chunk_dim; call fit first")
     chunk_dim = int(model.chunk_dim)
-    num_chunks = int(model.num_chunks)
-    num_clusters = int(model.num_clusters)
+    num_chunks = int(getattr(model, "M", getattr(model, "num_chunks")))
+    num_clusters = int(2 ** int(getattr(model, "B", int(round(math.log2(getattr(model, "num_clusters"))))) ))
     expected_rows = num_chunks * num_clusters
     if codebook_vectors.shape != (expected_rows, chunk_dim):
         raise ValueError(

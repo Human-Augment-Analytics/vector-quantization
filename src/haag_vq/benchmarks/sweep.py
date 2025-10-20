@@ -32,7 +32,7 @@ from haag_vq.data.datasets import Dataset, load_dummy_dataset, load_huggingface_
 from haag_vq.utils.run_logger import log_run
 
 
-from ..utils.faiss_export import MetricType
+from ..utils.faiss_utils import MetricType
 
 
 def sweep(
@@ -40,16 +40,16 @@ def sweep(
     dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
     num_samples: int = typer.Option(10000, help="Number of samples to use"),
     dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
-    # PQ-specific sweep parameters
-    pq_chunks: str = typer.Option("8,16,32", help="[PQ only] Comma-separated chunk values"),
-    pq_clusters: str = typer.Option("128,256", help="[PQ only] Comma-separated cluster values"),
+    # PQ-specific sweep parameters (M subquantizers, B bits per subvector)
+    pq_subquantizers: str = typer.Option("8,16,32", help="[PQ only] Comma-separated subquantizer counts (M)"),
+    pq_bits: str = typer.Option("8", help="[PQ only] Comma-separated bit values (B)"),
     # SQ-specific sweep parameters (example for future methods)
     sq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
     # RabitQ-specific sweep parameters
     rabitq_metric_type: str = typer.Option("1,23", help="[RabitQ only] Comma-separated metric distance types"),
     # OPQ-specific sweep parameters
-    opq_quantizers: str = typer.Option("2,3,4,5,6,7,8", help="[OPQ only] Comma-separated number of quantizers"),
-    opq_bits: str = typer.Option("8,16,32", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
+    opq_quantizers: str = typer.Option("8,16,32", help="[OPQ only] Comma-separated number of quantizers"),
+    opq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
     # Evaluation options
     with_recall: bool = typer.Option(True, help="Compute recall metrics"),
     with_pairwise: bool = typer.Option(True, help="Compute pairwise distance distortion"),
@@ -68,8 +68,8 @@ def sweep(
     Use 'vq-benchmark plot' to visualize the trade-offs.
 
     Examples:
-        # Sweep PQ with different chunks and clusters
-        vq-benchmark sweep --method pq --chunks "4,8,16" --clusters "128,256,512"
+        # Sweep PQ with different subquantizers (M) and bits (B)
+        vq-benchmark sweep --method pq --pq-subquantizers "4,8,16" --pq-bits "6,8"
 
         # Sweep on real embeddings
         vq-benchmark sweep --method pq --dataset huggingface
@@ -117,7 +117,7 @@ def sweep(
 
     # Generate parameter grid based on method
     if method == "pq":
-        configs = _generate_pq_configs(pq_chunks, pq_clusters)
+        configs = _generate_pq_configs(pq_subquantizers, pq_bits)
     elif method == "sq":
         configs = _generate_sq_configs(sq_bits)
     elif method == "rabitq":
@@ -158,17 +158,17 @@ def sweep(
     print("  • Query database: sqlite3 logs/benchmark_runs.db")
 
 
-def _generate_pq_configs(chunks: str, clusters: str) -> List[Dict[str, Any]]:
-    """Generate Product Quantization parameter grid."""
+def _generate_pq_configs(subquantizers: str, bits: str) -> List[Dict[str, Any]]:
+    """Generate Product Quantization parameter grid (M subquantizers, B bits)."""
     configs = []
-    chunk_values = [int(x.strip()) for x in chunks.split(",")]
-    cluster_values = [int(x.strip()) for x in clusters.split(",")]
+    m_values = [int(x.strip()) for x in subquantizers.split(",")]
+    b_values = [int(x.strip()) for x in bits.split(",")]
 
-    for num_chunks, num_clusters in itertools.product(chunk_values, cluster_values):
+    for m, b in itertools.product(m_values, b_values):
         configs.append({
-            "name": f"PQ(chunks={num_chunks}, clusters={num_clusters})",
-            "num_chunks": num_chunks,
-            "num_clusters": num_clusters,
+            "name": f"PQ(subquantizers={m}, bits={b})",
+            "subquantizers": m,
+            "bits": b,
         })
 
     return configs
@@ -264,8 +264,8 @@ def _run_single_config(
     # Create model based on method and config
     if method == "pq":
         model = ProductQuantizer(
-            num_chunks=config["num_chunks"],
-            num_clusters=config["num_clusters"],
+            M=config["subquantizers"],
+            B=config["bits"],
         )
     elif method == "sq":
         # SQ currently has no hyperparameters, but config is logged for consistency

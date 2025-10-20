@@ -15,7 +15,7 @@ def log_run(method, dataset, metrics: dict, config: dict = None, sweep_id: str =
         method: Quantization method name (e.g., "pq", "sq")
         dataset: Dataset name (e.g., "dummy", "huggingface", "msmarco")
         metrics: Dictionary of metric values
-        config: Optional configuration dictionary (e.g., num_chunks, num_clusters)
+        config: Optional configuration dictionary (e.g., M, B)
         sweep_id: Optional sweep identifier to group related runs together
         db_path: Optional path to database (default: logs/benchmark_runs.db or $DB_PATH)
     """

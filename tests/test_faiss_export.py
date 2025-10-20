@@ -86,7 +86,8 @@ def test_export_codebook_uses_ivf(tmp_path):
 def test_query_codebook_product_quantizer(tmp_path):
     rng = np.random.default_rng(0)
     data = rng.standard_normal((32, 8), dtype=np.float32)
-    quantizer = ProductQuantizer(num_chunks=2, num_clusters=4)
+    # 2 subquantizers (M=2), 2 bits (B=2) => ksub = 4
+    quantizer = ProductQuantizer(M=2, B=2)
     quantizer.fit(data)
 
     export_result = export_codebook(quantizer, tmp_path)
@@ -100,10 +101,11 @@ def test_query_codebook_product_quantizer(tmp_path):
         topk=2,
     )
 
-    assert distances.shape == (queries.shape[0], quantizer.num_chunks * 2)
-    assert indices.shape == (queries.shape[0], quantizer.num_chunks * 2)
+    assert distances.shape == (queries.shape[0], quantizer.M * 2)
+    assert indices.shape == (queries.shape[0], quantizer.M * 2)
     chunk0 = indices[:, :2]
     chunk1 = indices[:, 2:]
-    assert np.all(chunk0 < quantizer.num_clusters)
-    assert np.all((chunk1 >= quantizer.num_clusters) & (chunk1 < 2 * quantizer.num_clusters))
+    ksub = 2 ** quantizer.B
+    assert np.all(chunk0 < ksub)
+    assert np.all((chunk1 >= ksub) & (chunk1 < 2 * ksub))
 
