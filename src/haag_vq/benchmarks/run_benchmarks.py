@@ -106,16 +106,17 @@ def run(
     }
 
     qps_metrics = None
-    if codebook_vectors is not None:
-        try:
-            qps_metrics = measure_qps(
-                data.queries,
-                model=model,
-                codebook_vectors=codebook_vectors,
-            )
-            metrics.update(qps_metrics)
-        except Exception as exc:
-            print(f"Warning: Failed to measure QPS ({exc})")
+    # Always attempt QPS measurement. For RaBitQ, measure_qps falls back to
+    # timing model.compress and does not require a codebook.
+    try:
+        qps_metrics = measure_qps(
+            data.queries,
+            model=model,
+            codebook_vectors=codebook_vectors,
+        )
+        metrics.update(qps_metrics)
+    except Exception as exc:
+        print(f"Warning: Failed to measure QPS ({exc})")
 
     if with_recall:
         recall_metrics = evaluate_recall(data, model)

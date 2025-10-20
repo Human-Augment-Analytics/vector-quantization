@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import os
 
 import numpy as np
+import faiss
 import typer
 import uuid
 from datetime import datetime
@@ -46,7 +47,7 @@ def sweep(
     # SQ-specific sweep parameters (example for future methods)
     sq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
     # RabitQ-specific sweep parameters
-    rabitq_metric_type: str = typer.Option("1,23", help="[RabitQ only] Comma-separated metric distance types"),
+    rabitq_metric_type: str = typer.Option("L2", help="[RabitQ only] Comma-separated metric distance types"),
     # OPQ-specific sweep parameters
     opq_quantizers: str = typer.Option("8,16,32", help="[OPQ only] Comma-separated number of quantizers"),
     opq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
@@ -204,16 +205,42 @@ def _generate_sq_configs(bits: str) -> List[Dict[str, Any]]:
 
 
 def _generate_rabitq_configs(metric_type: str) -> List[Dict[str, Any]]:
-    "Generate RabitQ parameters config"
-    configs = []
-    metric_types = [MetricType(x.strip()) for x in metric_type.split(",")]
+    """Generate RaBitQ parameter grid for FAISS metric types.
+
+    Accepts a comma-separated list of either numeric values (e.g., "1,23")
+    or enum names (e.g., "L2,Jaccard"), case-insensitive.
+    """
+    configs: List[Dict[str, Any]] = []
+
+    tokens = [t.strip() for t in metric_type.split(",") if t.strip()]
+    metric_types: List[MetricType] = []
+
+    for t in tokens:
+        parsed: Optional[MetricType] = None
+        # Try numeric value first
+        try:
+            parsed = MetricType(int(t))
+        except ValueError:
+            parsed = None
+        # Fallback to name lookup (case-insensitive)
+        if parsed is None:
+            for m in MetricType:
+                if m.name.lower() == t.lower():
+                    parsed = m
+                    break
+        if parsed is None:
+            valid = ", ".join(m.name for m in MetricType)
+            raise ValueError(
+                f"Unknown RabitQ metric type: '{t}'. Use numeric value or one of: {valid}"
+            )
+        metric_types.append(parsed)
 
     for mt in metric_types:
         configs.append({
-            "name": f"RabitQ(metric={mt})",
+            "name": f"RabitQ(metric={mt.name})",
             "metric_type": mt,
         })
-    
+
     return configs
 
 def _generate_opq_configs(subquantizers: str, bits: str) -> List[Dict[str, Any]]:
@@ -239,6 +266,13 @@ def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
             return None
         chunks = [np.asarray(cb, dtype=np.float32) for cb in model.codebooks]
         return np.concatenate(chunks, axis=0)
+    if isinstance(model, OptimizedProductQuantizer):
+        if getattr(model, "pq", None) is None:
+            return None
+        flat = faiss.vector_to_array(model.pq.centroids)
+        centroids = flat.reshape(model.M, model.pq.ksub, model.pq.dsub)
+        chunks = [np.array(centroids[m], copy=True) for m in range(model.M)]
+        return np.concatenate(chunks, axis=0).astype(np.float32)
     if isinstance(model, ScalarQuantizer):
         if model.min is None or model.max is None:
             return None
