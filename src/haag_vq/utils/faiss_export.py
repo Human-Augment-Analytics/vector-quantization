@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Any
 
 import numpy as np
 
@@ -14,11 +14,30 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("FAISS is required to export codebooks. Install faiss-cpu or faiss-gpu.") from exc
 
 from haag_vq.methods.base_quantizer import BaseQuantizer
-from haag_vq.methods.product_quantization import ProductQuantizer
-from haag_vq.methods.scalar_quantization import ScalarQuantizer
+
+# NOTE: Importing method classes here can create circular imports when higher-level
+# modules import both methods and these utils together. To mitigate, we will rely
+# primarily on duck-typing and class-name checks, and only use these imports for
+# type hints and light checks. If circular import errors appear in your runtime
+# environment, replace the isinstance checks below with the helper predicates
+# `_is_pq_like`, `_is_opq`, `_is_scalar`, `_is_rabit`.
+
+def _is_pq_like(model: BaseQuantizer) -> bool:
+    return hasattr(model, "codebooks") or hasattr(model, "pq")
+
+
+def _is_opq(model: BaseQuantizer) -> bool:
+    return hasattr(model, "opq") and hasattr(model, "pq")
+
+
+def _is_scalar(model: BaseQuantizer) -> bool:
+    return hasattr(model, "min") and hasattr(model, "max")
+
+
+def _is_rabit(model: BaseQuantizer) -> bool:
+    return type(model).__name__ == "RaBitQuantizer"
 
 PathLike = Union[str, Path]
-
 
 def write_fvecs(path: PathLike, vectors: np.ndarray) -> Path:
     """Write float vectors to a .fvecs file (FAISS binary format)."""
@@ -95,37 +114,66 @@ def load_ivecs(path: PathLike) -> np.ndarray:
 
 
 def _default_index_key(model: BaseQuantizer) -> str:
-    if isinstance(model, ProductQuantizer):
-        bits = int(round(math.log2(model.num_clusters)))
-        return f"PQ{model.num_chunks}x{bits}"  # e.g. PQ8x8
-    if isinstance(model, ScalarQuantizer):
+    if _is_pq_like(model):
+        # For PQ, the canonical key is PQ{M}x{B}
+        bits = int(getattr(model, "B", int(round(math.log2(getattr(model, "num_clusters"))))) )
+        M = int(getattr(model, "M", getattr(model, "num_chunks")))
+        return f"PQ{M}x{bits}"  # e.g. PQ8x8
+    if _is_scalar(model):
         return "SQ8"  # 8-bit scalar quantizer
+    if _is_rabit(model):
+        # No factory shorthand for RaBitQ codebooks; fall back to a flat index
+        return "Flat"
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
 
 
 def _extract_codebook(model: BaseQuantizer) -> np.ndarray:
     """Return a 2D array of codebook vectors suitable for fvec export."""
-    if isinstance(model, ProductQuantizer):
+    if _is_pq_like(model) and hasattr(model, "codebooks"):
         if not model.codebooks:
             raise ValueError("ProductQuantizer has no trained codebooks")
         chunks = [np.asarray(cb, dtype=np.float32) for cb in model.codebooks]
         return np.concatenate(chunks, axis=0)
-    if isinstance(model, ScalarQuantizer):
+    if _is_opq(model):
+        # OPQ uses a rotation (opq) + PQ (pq). Export the PQ centroids (per-chunk).
+        if model.pq is None:
+            raise ValueError("OptimizedProductQuantizer must be fitted before export")
+        flat = faiss.vector_to_array(model.pq.centroids)
+        # Shape: (M, ksub, dsub) -> concatenate across M to (M*ksub, dsub)
+        M = int(getattr(model, "M"))
+        centroids = flat.reshape(M, model.pq.ksub, model.pq.dsub)
+        chunks = [np.array(centroids[m], copy=True) for m in range(M)]
+        return np.concatenate(chunks, axis=0).astype(np.float32)
+    if _is_scalar(model):
         if model.min is None or model.max is None:
             raise ValueError("ScalarQuantizer must be fitted before export")
         return np.stack([model.min, model.max]).astype(np.float32)
+    if _is_rabit(model):
+        # RaBitQ is a bit-level quantizer and does not expose a static codebook.
+        # Signal to callers that exporting a codebook is not applicable.
+        raise RuntimeError(
+            "RaBitQuantizer does not expose a static codebook for export"
+        )
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
 
 
 def _infer_dimensionality(model: BaseQuantizer) -> int:
-    if isinstance(model, ProductQuantizer):
+    if _is_pq_like(model) and hasattr(model, "chunk_dim") and model.chunk_dim is not None:
         if model.chunk_dim is None:
             raise ValueError("ProductQuantizer has no chunk_dim; call fit first")
-        return model.chunk_dim * model.num_chunks
-    if isinstance(model, ScalarQuantizer):
+        M = int(getattr(model, "M", getattr(model, "num_chunks")))
+        return int(model.chunk_dim) * M
+    if _is_opq(model):
+        if model.pq is None:
+            raise ValueError("OptimizedProductQuantizer must be fitted before export")
+        return int(model.pq.dsub) * int(model.M)
+    if _is_scalar(model):
         if model.min is None:
             raise ValueError("ScalarQuantizer has no min; call fit first")
         return int(model.min.shape[0])
+    if _is_rabit(model):
+        # No codebook-based dimensionality for RaBitQ
+        raise RuntimeError("RaBitQuantizer does not support codebook-based FAISS export")
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
 
 
@@ -141,10 +189,12 @@ def _normalize_training_vectors(training_vectors: Optional[np.ndarray]) -> Optio
 
 def _estimate_codebook_size(model: BaseQuantizer) -> Optional[int]:
     """Best-effort estimate of codebook cardinality when no training data is supplied."""
-    if isinstance(model, ProductQuantizer):
-        return model.num_chunks * model.num_clusters
-    if isinstance(model, ScalarQuantizer):
-        if model.min is None or model.max is None:
+    if _is_pq_like(model):
+        M = int(getattr(model, "M", getattr(model, "num_chunks")))
+        B = int(getattr(model, "B", int(round(math.log2(getattr(model, "num_clusters", 0))))) )
+        return M * (2 ** B)
+    if _is_scalar(model):
+        if getattr(model, "min", None) is None or getattr(model, "max", None) is None:
             return None
         return 2
     return None
@@ -248,7 +298,7 @@ def export_codebook(
     codebook_path = write_fvecs(output_path / codebook_filename, codebook)
 
     index: Optional[faiss.Index] = None
-    if not isinstance(model, ProductQuantizer):
+    if not _is_pq_like(model):
         index = build_faiss_index(
             model,
             index_key=index_key,
@@ -274,32 +324,42 @@ def export_codebook(
 
 def _query_product_codebook(
     queries: np.ndarray,
-    model: ProductQuantizer,
+    model: BaseQuantizer,
     codebook_vectors: np.ndarray,
     topk: int,
     metric: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """FAISS search tailored for ProductQuantizer codebooks."""
-    if model.chunk_dim is None:
-        raise ValueError("ProductQuantizer has no chunk_dim; call fit first")
-    chunk_dim = int(model.chunk_dim)
-    num_chunks = int(model.num_chunks)
-    num_clusters = int(model.num_clusters)
+    """FAISS search tailored for ProductQuantizer/OPQ codebooks."""
+    # Infer per-chunk dimensionality and optionally apply OPQ transform
+    if _is_pq_like(model) and hasattr(model, "chunk_dim") and model.chunk_dim is not None:
+        if model.chunk_dim is None:
+            raise ValueError("ProductQuantizer has no chunk_dim; call fit first")
+        chunk_dim = int(model.chunk_dim)
+        num_chunks = int(getattr(model, "M", getattr(model, "num_chunks")))
+        num_clusters = int(2 ** int(getattr(model, "B", int(round(math.log2(getattr(model, "num_clusters"))))) ))
+        transformed_queries = queries
+    elif _is_opq(model):
+        if model.pq is None or model.opq is None:
+            raise ValueError("OptimizedProductQuantizer must be fitted before querying")
+        chunk_dim = int(model.pq.dsub)
+        num_chunks = int(model.M)
+        num_clusters = int(model.pq.ksub)
+        transformed_queries = model.opq.apply(queries)
     expected_rows = num_chunks * num_clusters
     if codebook_vectors.shape != (expected_rows, chunk_dim):
         raise ValueError(
             "ProductQuantizer codebook has unexpected shape; expected "
             f"({expected_rows}, {chunk_dim}) but received {codebook_vectors.shape}"
         )
-    if queries.shape[1] != chunk_dim * num_chunks:
+    if transformed_queries.shape[1] != chunk_dim * num_chunks:
         raise ValueError(
             "Query dimensionality does not match ProductQuantizer. "
-            f"Expected {chunk_dim * num_chunks} but received {queries.shape[1]}"
+            f"Expected {chunk_dim * num_chunks} but received {transformed_queries.shape[1]}"
         )
     per_chunk_topk = min(topk, num_clusters)
     if per_chunk_topk <= 0:
         raise ValueError("topk must be positive and <= number of clusters")
-    query_chunks = queries.reshape(queries.shape[0], num_chunks, chunk_dim)
+    query_chunks = transformed_queries.reshape(transformed_queries.shape[0], num_chunks, chunk_dim)
     codebook_chunks = codebook_vectors.reshape(num_chunks, num_clusters, chunk_dim)
     if metric == faiss.METRIC_L2:
         index_factory = faiss.IndexFlatL2
@@ -376,7 +436,7 @@ def query_codebook(
         raise ValueError("topk must be positive")
     topk = int(topk)
 
-    if isinstance(model, ProductQuantizer):
+    if _is_pq_like(model) or _is_opq(model):
         return _query_product_codebook(
             queries,
             model,

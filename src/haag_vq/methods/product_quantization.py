@@ -1,45 +1,94 @@
 import numpy as np
-from sklearn.cluster import KMeans
 
 from .base_quantizer import BaseQuantizer
 
+import faiss
+
 
 class ProductQuantizer(BaseQuantizer):
-    def __init__(self, num_chunks=8, num_clusters=256):
-        self.num_chunks = num_chunks
-        self.num_clusters = num_clusters
-        self.codebooks = []
-        self.chunk_dim = None
+    def __init__(
+        self,
+        M: int | None = None,
+        B: int = 8,
+        *,
+        # Backward-compat kwargs (deprecated):
+        num_chunks: int | None = None,
+        num_clusters: int | None = None,
+    ):
+        """
+        Product Quantization using FAISS' ProductQuantizer.
 
-    def fit(self, X):
+        Args:
+            M: Number of subquantizers (chunks).
+            B: Number of bits per subvector index (ksub = 2**B).
+            num_chunks: Deprecated alias for `M`.
+            num_clusters: Deprecated alias for `2**B` (must be a power of two).
+        """
+        # Resolve parameter aliases for backward compatibility
+        if M is None and num_chunks is not None:
+            M = int(num_chunks)
+        if num_chunks is not None and M is not None and int(num_chunks) != int(M):
+            raise ValueError("Conflicting values for M and num_chunks")
+
+        if num_clusters is not None:
+            # Derive B from num_clusters; must be an exact power of two
+            if num_clusters <= 0:
+                raise ValueError("num_clusters must be positive")
+            log2_clusters = int(round(np.log2(num_clusters)))
+            if 2 ** log2_clusters != int(num_clusters):
+                raise ValueError("num_clusters must be a power of two")
+            B = log2_clusters
+
+        if M is None:
+            M = 8  # sensible default
+
+        self.M: int = int(M)
+        self.B: int = int(B)
+
+        # Compatibility attributes used elsewhere in the codebase/tests
+        self.num_chunks: int = self.M
+        self.num_clusters: int = 2 ** self.B
+
+        # Learned state
+        self.codebooks: list[np.ndarray] = []  # list of (ksub, dsub)
+        self.chunk_dim: int | None = None
+        self.pq: faiss.ProductQuantizer | None = None
+
+    def fit(self, X: np.ndarray) -> None:
+        X = np.asarray(X, dtype=np.float32)
         N, D = X.shape
-        assert D % self.num_chunks == 0, "D must be divisible by num_chunks"
-        self.chunk_dim = D // self.num_chunks
-        self.codebooks = []
+        if D % self.M != 0:
+            raise AssertionError("D must be divisible by M (number of subquantizers)")
 
-        for i in range(self.num_chunks):
-            chunk = X[:, i * self.chunk_dim:(i + 1) * self.chunk_dim]
-            kmeans = KMeans(n_clusters=self.num_clusters, n_init=1, max_iter=100)
-            kmeans.fit(chunk)
-            self.codebooks.append(kmeans.cluster_centers_)
+        self.chunk_dim = D // self.M
 
-    def compress(self, X):
-        compressed = []
-        for i in range(self.num_chunks):
-            chunk = X[:, i * self.chunk_dim:(i + 1) * self.chunk_dim]
-            centers = self.codebooks[i]
-            assignments = np.argmin(np.linalg.norm(chunk[:, np.newaxis] - centers, axis=2), axis=1)
-            compressed.append(assignments)
-        return np.stack(compressed, axis=1)  # shape: (N, num_chunks)
+        # Train FAISS ProductQuantizer
+        self.pq = faiss.ProductQuantizer(D, self.M, self.B)
+        self.pq.train(X)
 
-    def decompress(self, compressed):
-        vectors = []
-        for i in range(self.num_chunks):
-            centers = self.codebooks[i]
-            vectors.append(centers[compressed[:, i]])
-        return np.hstack(vectors)
+        # Extract trained centroids into compatibility structure
+        # centroids is a flat array of size (M * ksub * dsub)
+        flat = faiss.vector_to_array(self.pq.centroids)
+        centroids = flat.reshape(self.M, self.pq.ksub, self.pq.dsub)
+        self.codebooks = [np.array(centroids[m], copy=True) for m in range(self.M)]
 
-    def get_compression_ratio(self, X):
-        original_size = X.shape[1] * 4  # float32 = 4 bytes
-        compressed_size = self.num_chunks  # one byte per chunk
-        return original_size / compressed_size
+    def compress(self, X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=np.float32)
+        return self.pq.compute_codes(X)
+
+    def decompress(self, codes: np.ndarray) -> np.ndarray:
+        codes = np.asarray(codes)
+        return self.pq.decode(codes)
+
+    def get_compression_ratio(self, X: np.ndarray) -> float:
+        """Return compression ratio (original bytes / compressed bytes).
+
+        Assumes `float32` inputs and `B` bits per subvector code across `M` subvectors.
+        """
+        D = int(X.shape[1])
+        original_size_bytes = D * 4  # float32 = 4 bytes
+        if self.pq is not None and hasattr(self.pq, "code_size"):
+            compressed_size_bytes = int(self.pq.code_size)
+        else:
+            compressed_size_bytes = int((self.M * self.B + 7) // 8)
+        return float(original_size_bytes / compressed_size_bytes)

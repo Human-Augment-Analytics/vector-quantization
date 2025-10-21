@@ -15,12 +15,15 @@ from typing import Any, Dict, List, Optional
 import os
 
 import numpy as np
+import faiss
 import typer
 import uuid
 from datetime import datetime
 
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
+from haag_vq.methods.rabit_quantization import RaBitQuantizer
+from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.pairwise_distortion import compute_pairwise_distortion
 from haag_vq.metrics.rank_distortion import compute_rank_distortion
@@ -30,16 +33,24 @@ from haag_vq.data.datasets import Dataset, load_dummy_dataset, load_huggingface_
 from haag_vq.utils.run_logger import log_run
 
 
+from ..utils.faiss_utils import MetricType
+
+
 def sweep(
     method: str = typer.Option("pq", help="Compression method: pq, sq, etc."),
     dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
     num_samples: int = typer.Option(10000, help="Number of samples to use"),
     dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
-    # PQ-specific sweep parameters
-    pq_chunks: str = typer.Option("8,16,32", help="[PQ only] Comma-separated chunk values"),
-    pq_clusters: str = typer.Option("128,256", help="[PQ only] Comma-separated cluster values"),
+    # PQ-specific sweep parameters (M subquantizers, B bits per subvector)
+    pq_subquantizers: str = typer.Option("8,16,32", help="[PQ only] Comma-separated subquantizer counts (M)"),
+    pq_bits: str = typer.Option("8", help="[PQ only] Comma-separated bit values (B)"),
     # SQ-specific sweep parameters (example for future methods)
     sq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
+    # RabitQ-specific sweep parameters
+    rabitq_metric_type: str = typer.Option("L2", help="[RabitQ only] Comma-separated metric distance types"),
+    # OPQ-specific sweep parameters
+    opq_quantizers: str = typer.Option("8,16,32", help="[OPQ only] Comma-separated number of quantizers"),
+    opq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
     # Evaluation options
     with_recall: bool = typer.Option(True, help="Compute recall metrics"),
     with_pairwise: bool = typer.Option(True, help="Compute pairwise distance distortion"),
@@ -58,8 +69,8 @@ def sweep(
     Use 'vq-benchmark plot' to visualize the trade-offs.
 
     Examples:
-        # Sweep PQ with different chunks and clusters
-        vq-benchmark sweep --method pq --chunks "4,8,16" --clusters "128,256,512"
+        # Sweep PQ with different subquantizers (M) and bits (B)
+        vq-benchmark sweep --method pq --pq-subquantizers "4,8,16" --pq-bits "6,8"
 
         # Sweep on real embeddings
         vq-benchmark sweep --method pq --dataset huggingface
@@ -107,11 +118,15 @@ def sweep(
 
     # Generate parameter grid based on method
     if method == "pq":
-        configs = _generate_pq_configs(pq_chunks, pq_clusters)
+        configs = _generate_pq_configs(pq_subquantizers, pq_bits)
     elif method == "sq":
         configs = _generate_sq_configs(sq_bits)
+    elif method == "rabitq":
+        configs = _generate_rabitq_configs(rabitq_metric_type)
+    elif method == "opq":
+        configs = _generate_opq_configs(opq_quantizers, opq_bits)
     else:
-        raise ValueError(f"Unknown method: {method}. Supported: pq, sq")
+        raise ValueError(f"Unknown method: {method}. Supported: pq, sq, rabitq, opq")
 
     print(f"\nRunning {len(configs)} configurations...")
     print("-" * 70)
@@ -144,17 +159,17 @@ def sweep(
     print("  • Query database: sqlite3 logs/benchmark_runs.db")
 
 
-def _generate_pq_configs(chunks: str, clusters: str) -> List[Dict[str, Any]]:
-    """Generate Product Quantization parameter grid."""
+def _generate_pq_configs(subquantizers: str, bits: str) -> List[Dict[str, Any]]:
+    """Generate Product Quantization parameter grid (M subquantizers, B bits)."""
     configs = []
-    chunk_values = [int(x.strip()) for x in chunks.split(",")]
-    cluster_values = [int(x.strip()) for x in clusters.split(",")]
+    m_values = [int(x.strip()) for x in subquantizers.split(",")]
+    b_values = [int(x.strip()) for x in bits.split(",")]
 
-    for num_chunks, num_clusters in itertools.product(chunk_values, cluster_values):
+    for m, b in itertools.product(m_values, b_values):
         configs.append({
-            "name": f"PQ(chunks={num_chunks}, clusters={num_clusters})",
-            "num_chunks": num_chunks,
-            "num_clusters": num_clusters,
+            "name": f"PQ(subquantizers={m}, bits={b})",
+            "subquantizers": m,
+            "bits": b,
         })
 
     return configs
@@ -189,6 +204,61 @@ def _generate_sq_configs(bits: str) -> List[Dict[str, Any]]:
     return configs
 
 
+def _generate_rabitq_configs(metric_type: str) -> List[Dict[str, Any]]:
+    """Generate RaBitQ parameter grid for FAISS metric types.
+
+    Accepts a comma-separated list of either numeric values (e.g., "1,23")
+    or enum names (e.g., "L2,Jaccard"), case-insensitive.
+    """
+    configs: List[Dict[str, Any]] = []
+
+    tokens = [t.strip() for t in metric_type.split(",") if t.strip()]
+    metric_types: List[MetricType] = []
+
+    for t in tokens:
+        parsed: Optional[MetricType] = None
+        # Try numeric value first
+        try:
+            parsed = MetricType(int(t))
+        except ValueError:
+            parsed = None
+        # Fallback to name lookup (case-insensitive)
+        if parsed is None:
+            for m in MetricType:
+                if m.name.lower() == t.lower():
+                    parsed = m
+                    break
+        if parsed is None:
+            valid = ", ".join(m.name for m in MetricType)
+            raise ValueError(
+                f"Unknown RabitQ metric type: '{t}'. Use numeric value or one of: {valid}"
+            )
+        metric_types.append(parsed)
+
+    for mt in metric_types:
+        configs.append({
+            "name": f"RabitQ(metric={mt.name})",
+            "metric_type": mt,
+        })
+
+    return configs
+
+def _generate_opq_configs(subquantizers: str, bits: str) -> List[Dict[str, Any]]:
+    "Generate OPQ parameters config"
+    configs = []
+    num_subquantizers = [int(x.strip()) for x in subquantizers.split(",")]
+    num_bits = [int(x.strip()) for x in bits.split(",")]
+
+    for m, b in itertools.product(num_subquantizers, num_bits):
+        configs.append({
+            "name": f"OPQ(subquantizers={m}, bits={b})",
+            "subquantizers": m,
+            "bits": b,
+        })
+    
+    return configs
+
+
 def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
     """Return codebook vectors for QPS measurement without touching disk."""
     if isinstance(model, ProductQuantizer):
@@ -196,6 +266,13 @@ def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
             return None
         chunks = [np.asarray(cb, dtype=np.float32) for cb in model.codebooks]
         return np.concatenate(chunks, axis=0)
+    if isinstance(model, OptimizedProductQuantizer):
+        if getattr(model, "pq", None) is None:
+            return None
+        flat = faiss.vector_to_array(model.pq.centroids)
+        centroids = flat.reshape(model.M, model.pq.ksub, model.pq.dsub)
+        chunks = [np.array(centroids[m], copy=True) for m in range(model.M)]
+        return np.concatenate(chunks, axis=0).astype(np.float32)
     if isinstance(model, ScalarQuantizer):
         if model.min is None or model.max is None:
             return None
@@ -221,12 +298,21 @@ def _run_single_config(
     # Create model based on method and config
     if method == "pq":
         model = ProductQuantizer(
-            num_chunks=config["num_chunks"],
-            num_clusters=config["num_clusters"],
+            M=config["subquantizers"],
+            B=config["bits"],
         )
     elif method == "sq":
         # SQ currently has no hyperparameters, but config is logged for consistency
         model = ScalarQuantizer()
+    elif method == "rabitq":
+        model = RaBitQuantizer(
+            metric_type=config["metric_type"]
+        )
+    elif method == "opq":
+        model = OptimizedProductQuantizer(
+            M=config["subquantizers"],
+            B=config["bits"]
+        )
     else:
         raise ValueError(f"Unsupported method: {method}")
 

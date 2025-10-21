@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from haag_vq.methods.base_quantizer import BaseQuantizer
+from haag_vq.methods.rabit_quantization import RaBitQuantizer
 from haag_vq.utils.faiss_export import query_codebook
 
 
@@ -34,7 +35,13 @@ def measure_qps(
     repeats: int = 3,
     topk: int = 1,
 ) -> Dict[str, float]:
-    """Measure query throughput (QPS) by calling :func:`query_codebook` repeatedly."""
+    """Measure query throughput (QPS).
+
+    For PQ/SQ/OPQ-like models, this runs :func:`query_codebook` (nearest-centroid
+    lookup against the exported codebook). For :class:`RaBitQuantizer`, which does
+    not expose a static codebook, this measures the throughput of ``model.compress``
+    (code assignment) as a proxy for query-time performance.
+    """
     queries = np.asarray(queries, dtype=np.float32)
     if queries.ndim == 1:
         queries = queries.reshape(1, -1)
@@ -43,15 +50,24 @@ def measure_qps(
 
     timed_runs = max(1, repeats)
     durations: List[float] = []
+    # Choose the runner: codebook search for most models, code assignment for RaBitQ
+    if isinstance(model, RaBitQuantizer):
+        def _run_once():
+            # Use compress as the closest analog to query-time work for RaBitQ
+            model.compress(queries)
+    else:
+        def _run_once():
+            query_codebook(
+                queries,
+                model=model,
+                codebook_vectors=codebook_vectors,
+                codebook_path=codebook_path,
+                topk=topk,
+            )
+
     for _ in range(timed_runs):
         start = perf_counter()
-        query_codebook(
-            queries,
-            model=model,
-            codebook_vectors=codebook_vectors,
-            codebook_path=codebook_path,
-            topk=topk,
-        )
+        _run_once()
         durations.append(perf_counter() - start)
 
     durations = [max(d, 1e-12) for d in durations]

@@ -19,8 +19,8 @@ def run(
     dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
     num_samples: int = typer.Option(10000, help="Number of samples to use"),
     dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
-    num_chunks: int = typer.Option(8, help="Number of chunks for PQ"),
-    num_clusters: int = typer.Option(256, help="Number of clusters per chunk for PQ"),
+    M: int = typer.Option(8, help="[PQ only] Number of subquantizers (M)"),
+    B: int = typer.Option(8, help="[PQ only] Bits per subvector index (B)"),
     with_recall: bool = typer.Option(False, help="Whether to compute Recall@k metrics"),
     ground_truth_path: str = typer.Option(None, help="Path to precomputed ground truth (.npy file)"),
     codebooks_dir: str = typer.Option(None, help="Directory to save codebooks (default: ./codebooks or $CODEBOOKS_DIR)"),
@@ -54,8 +54,8 @@ def run(
         raise ValueError(f"Unsupported dataset: {dataset}. Currently supported: dummy")
 
     if method == "pq":
-        print(f"Fitting PQ (chunks={num_chunks}, clusters={num_clusters})...")
-        model = ProductQuantizer(num_chunks=num_chunks, num_clusters=num_clusters)
+        print(f"Fitting PQ (M={M}, B={B})...")
+        model = ProductQuantizer(M=M, B=B)
     elif method == "sq":
         print("Fitting SQ...")
         model = ScalarQuantizer()
@@ -106,16 +106,17 @@ def run(
     }
 
     qps_metrics = None
-    if codebook_vectors is not None:
-        try:
-            qps_metrics = measure_qps(
-                data.queries,
-                model=model,
-                codebook_vectors=codebook_vectors,
-            )
-            metrics.update(qps_metrics)
-        except Exception as exc:
-            print(f"Warning: Failed to measure QPS ({exc})")
+    # Always attempt QPS measurement. For RaBitQ, measure_qps falls back to
+    # timing model.compress and does not require a codebook.
+    try:
+        qps_metrics = measure_qps(
+            data.queries,
+            model=model,
+            codebook_vectors=codebook_vectors,
+        )
+        metrics.update(qps_metrics)
+    except Exception as exc:
+        print(f"Warning: Failed to measure QPS ({exc})")
 
     if with_recall:
         recall_metrics = evaluate_recall(data, model)

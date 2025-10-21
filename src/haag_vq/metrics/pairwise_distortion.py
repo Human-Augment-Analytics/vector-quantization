@@ -59,7 +59,7 @@ def compute_pairwise_distortion(
         - std: Standard deviation of distortion
 
     Example:
-        >>> pq = ProductQuantizer(num_chunks=8, num_clusters=256)
+        >>> pq = ProductQuantizer(M=8, B=8)
         >>> pq.fit(X)
         >>> codes = pq.compress(X)
         >>> distortion = compute_pairwise_distortion(X, codes, pq, num_pairs=1000)
