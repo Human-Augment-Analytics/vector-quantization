@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 import os
 
 import numpy as np
-import faiss
 import typer
 import uuid
 from datetime import datetime
@@ -23,6 +22,7 @@ from datetime import datetime
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
 from haag_vq.methods.rabit_quantization import RaBitQuantizer
+from haag_vq.methods.saq import SAQ
 from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.pairwise_distortion import compute_pairwise_distortion
@@ -37,7 +37,7 @@ from ..utils.faiss_utils import MetricType
 
 
 def sweep(
-    method: str = typer.Option("pq", help="Compression method: pq, sq, etc."),
+    method: str = typer.Option("pq", help="Compression method: pq, sq, rabitq, opq, saq"),
     dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
     num_samples: int = typer.Option(10000, help="Number of samples to use"),
     dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
@@ -48,6 +48,11 @@ def sweep(
     sq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
     # RabitQ-specific sweep parameters
     rabitq_metric_type: str = typer.Option("L2", help="[RabitQ only] Comma-separated metric distance types"),
+    # SAQ-specific sweep parameters
+    saq_num_bits: str = typer.Option("4,8", help="[SAQ only] Default per-dimension bitwidth sweep (e.g., '4,6,8')"),
+    saq_total_bits: str = typer.Option("", help="[SAQ only] Comma-separated total bit budgets per vector; if set, overrides num_bits sweep"),
+    saq_allowed_bits: str = typer.Option("0,2,4,6,8", help="[SAQ only] Allowed per-segment bitwidths"),
+    saq_segments: str = typer.Option("", help="[SAQ only] Comma-separated segment counts (e.g., '4,8'); if empty, heuristic is used"),
     # OPQ-specific sweep parameters
     opq_quantizers: str = typer.Option("8,16,32", help="[OPQ only] Comma-separated number of quantizers"),
     opq_bits: str = typer.Option("8", help="[SQ only] Comma-separated bit values (e.g., '4,8,16')"),
@@ -123,10 +128,17 @@ def sweep(
         configs = _generate_sq_configs(sq_bits)
     elif method == "rabitq":
         configs = _generate_rabitq_configs(rabitq_metric_type)
+    elif method == "saq":
+        configs = _generate_saq_configs(
+            num_bits=saq_num_bits,
+            total_bits=saq_total_bits,
+            allowed_bits=saq_allowed_bits,
+            segments=saq_segments,
+        )
     elif method == "opq":
         configs = _generate_opq_configs(opq_quantizers, opq_bits)
     else:
-        raise ValueError(f"Unknown method: {method}. Supported: pq, sq, rabitq, opq")
+        raise ValueError(f"Unknown method: {method}. Supported: pq, sq, rabitq, opq, saq")
 
     print(f"\nRunning {len(configs)} configurations...")
     print("-" * 70)
@@ -259,6 +271,52 @@ def _generate_opq_configs(subquantizers: str, bits: str) -> List[Dict[str, Any]]
     return configs
 
 
+def _generate_saq_configs(
+    *,
+    num_bits: str,
+    total_bits: str,
+    allowed_bits: str,
+    segments: str,
+) -> List[Dict[str, Any]]:
+    """Generate SAQ parameter grid.
+
+    Two modes are supported:
+    - Fixed per-dimension bitwidth sweep (when `total_bits` is empty)
+    - Global per-vector bit budget sweep (when `total_bits` is provided)
+    """
+    configs: List[Dict[str, Any]] = []
+
+    total_bits_vals = [t.strip() for t in (total_bits or "").split(",") if t.strip()]
+    if total_bits_vals:
+        # Budgeted mode: sweep over total_bits (and optionally segments)
+        allowed = [int(x.strip()) for x in allowed_bits.split(",") if x.strip()]
+        seg_vals = [int(x.strip()) for x in segments.split(",") if x.strip()]
+        seg_vals = seg_vals or [None]  # allow heuristic when unspecified
+        for tb_str in total_bits_vals:
+            tb = int(tb_str)
+            for nseg in seg_vals:
+                name = f"SAQ(total_bits={tb}"
+                if nseg is not None:
+                    name += f", segments={nseg}"
+                name += f", allowed={allowed})"
+                configs.append({
+                    "name": name,
+                    "total_bits": tb,
+                    "allowed_bits": allowed,
+                    "n_segments": nseg,
+                })
+    else:
+        # Fixed per-dimension bitwidth sweep
+        bit_vals = [int(x.strip()) for x in num_bits.split(",") if x.strip()]
+        for b in bit_vals:
+            configs.append({
+                "name": f"SAQ(num_bits={b})",
+                "num_bits": b,
+            })
+
+    return configs
+
+
 def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
     """Return codebook vectors for QPS measurement without touching disk."""
     if isinstance(model, ProductQuantizer):
@@ -267,6 +325,8 @@ def _get_codebook_vectors(model: Any) -> Optional[np.ndarray]:
         chunks = [np.asarray(cb, dtype=np.float32) for cb in model.codebooks]
         return np.concatenate(chunks, axis=0)
     if isinstance(model, OptimizedProductQuantizer):
+        # Local import of faiss to avoid hard dependency when OPQ is not used
+        import faiss  # type: ignore
         if getattr(model, "pq", None) is None:
             return None
         flat = faiss.vector_to_array(model.pq.centroids)
@@ -308,6 +368,19 @@ def _run_single_config(
         model = RaBitQuantizer(
             metric_type=config["metric_type"]
         )
+    elif method == "saq":
+        # Construct SAQ either in fixed-bit or budgeted mode based on config
+        if "total_bits" in config:
+            model = SAQ(
+                num_bits=8,  # unused in budget mode
+                total_bits=int(config["total_bits"]),
+                allowed_bits=tuple(config.get("allowed_bits", (0, 2, 4, 6, 8))),
+                n_segments=config.get("n_segments", None),
+            )
+        else:
+            model = SAQ(
+                num_bits=int(config["num_bits"]),
+            )
     elif method == "opq":
         model = OptimizedProductQuantizer(
             M=config["subquantizers"],
