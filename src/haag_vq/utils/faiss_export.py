@@ -37,6 +37,10 @@ def _is_scalar(model: BaseQuantizer) -> bool:
 def _is_rabit(model: BaseQuantizer) -> bool:
     return type(model).__name__ == "RaBitQuantizer"
 
+def _is_saq(model: BaseQuantizer) -> bool:
+    # SAQ is a segmented scalar quantizer without a static centroid codebook
+    return type(model).__name__ == "SAQ"
+
 PathLike = Union[str, Path]
 
 def write_fvecs(path: PathLike, vectors: np.ndarray) -> Path:
@@ -121,7 +125,7 @@ def _default_index_key(model: BaseQuantizer) -> str:
         return f"PQ{M}x{bits}"  # e.g. PQ8x8
     if _is_scalar(model):
         return "SQ8"  # 8-bit scalar quantizer
-    if _is_rabit(model):
+    if _is_rabit(model) or _is_saq(model):
         # No factory shorthand for RaBitQ codebooks; fall back to a flat index
         return "Flat"
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
@@ -148,11 +152,11 @@ def _extract_codebook(model: BaseQuantizer) -> np.ndarray:
         if model.min is None or model.max is None:
             raise ValueError("ScalarQuantizer must be fitted before export")
         return np.stack([model.min, model.max]).astype(np.float32)
-    if _is_rabit(model):
-        # RaBitQ is a bit-level quantizer and does not expose a static codebook.
+    if _is_rabit(model) or _is_saq(model):
+        # RaBitQ/SAQ are bit-level quantizers and do not expose a static codebook.
         # Signal to callers that exporting a codebook is not applicable.
         raise RuntimeError(
-            "RaBitQuantizer does not expose a static codebook for export"
+            "This quantizer does not expose a static codebook for export"
         )
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
 
@@ -171,9 +175,9 @@ def _infer_dimensionality(model: BaseQuantizer) -> int:
         if model.min is None:
             raise ValueError("ScalarQuantizer has no min; call fit first")
         return int(model.min.shape[0])
-    if _is_rabit(model):
-        # No codebook-based dimensionality for RaBitQ
-        raise RuntimeError("RaBitQuantizer does not support codebook-based FAISS export")
+    if _is_rabit(model) or _is_saq(model):
+        # No codebook-based dimensionality for RaBitQ/SAQ
+        raise RuntimeError("This quantizer does not support codebook-based FAISS export")
     raise TypeError(f"Unsupported quantizer type: {type(model)!r}")
 
 
