@@ -18,6 +18,10 @@ import os
 # Suppress tokenizers parallelism warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Set HuggingFace cache to local directory to avoid permission issues on shared storage
+os.environ["HF_HOME"] = os.path.abspath("../.cache/huggingface")
+os.environ["HF_DATASETS_CACHE"] = os.path.abspath("../.cache/huggingface/datasets")
+
 import numpy as np
 from haag_vq.data import load_dbpedia_openai_1536_100k
 from haag_vq.methods.product_quantization import ProductQuantizer
