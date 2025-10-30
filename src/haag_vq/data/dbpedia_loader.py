@@ -2,10 +2,11 @@
 """
 Loaders for DBpedia pre-embedded datasets from Qdrant.
 Datasets:
+  - https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-100K
   - https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M
   - https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-3072-1M
 
-These datasets contain 1M DBpedia entity records pre-embedded with OpenAI models.
+These datasets contain DBpedia entity records (100K or 1M) pre-embedded with OpenAI models.
 """
 from typing import Optional, Literal
 import numpy as np
@@ -145,12 +146,77 @@ def load_dbpedia_openai_3072(
     )
 
 
+def load_dbpedia_openai_1536_100k(
+    limit: Optional[int] = None,
+    num_queries: int = 100,
+    cache_dir: Optional[str] = None,
+    streaming: bool = False,
+) -> Dataset:
+    """Load DBpedia entities with OpenAI text-embedding-3-large (1536 dimensions, 100K subset).
+
+    Args:
+        limit: Maximum number of entities to load (default: None = all 100K).
+        num_queries: Number of query vectors to use (default: 100)
+        cache_dir: Optional cache directory for Hugging Face datasets (e.g., '../datasets/')
+        streaming: If True, stream the dataset to avoid loading all into memory at once
+
+    Returns:
+        Dataset object with pre-computed 1536-dim embeddings
+
+    Note:
+        - Contains 100K DBpedia entities (smaller subset for faster testing)
+        - Embeddings: OpenAI text-embedding-3-large (1536 dimensions)
+        - Generated from concatenated title + text fields
+        - Ideal for quick experiments and testing before scaling to 1M dataset
+    """
+    if not HF_AVAILABLE:
+        raise RuntimeError("Hugging Face 'datasets' not installed. pip install datasets")
+
+    print(f"Loading DBpedia OpenAI 1536-dim 100K dataset (limit={limit}, streaming={streaming})...")
+
+    ds = load_dataset(
+        "Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-100K",
+        split="train",
+        cache_dir=cache_dir,
+        streaming=streaming,
+    )
+
+    # Extract embeddings
+    embeddings = []
+    count = 0
+    max_count = limit if limit is not None else 100_000
+
+    print(f"Extracting embeddings...")
+    iterator = tqdm(ds, total=min(limit or 100_000, 100_000), desc="Loading vectors")
+
+    for item in iterator:
+        if count >= max_count:
+            break
+        embeddings.append(item['text-embedding-3-large-1536-embedding'])
+        count += 1
+
+    vectors = np.array(embeddings, dtype=np.float32)
+    print(f"Loaded {len(vectors)} vectors with dimension {vectors.shape[1]}")
+
+    # Use first num_queries vectors as queries
+    queries = vectors[:num_queries] if len(vectors) >= num_queries else vectors[:len(vectors)]
+
+    # For 100K dataset, we can optionally compute ground truth (not too large)
+    skip_gt = limit is None or limit > 10_000
+    return Dataset(
+        vectors=vectors,
+        queries=queries,
+        skip_ground_truth=skip_gt,
+    )
+
+
 def load_dbpedia_openai(
     embedding_dim: Literal[1536, 3072] = 1536,
     limit: Optional[int] = 100_000,
     num_queries: int = 100,
     cache_dir: Optional[str] = None,
     streaming: bool = False,
+    use_100k_subset: bool = False,
 ) -> Dataset:
     """Load DBpedia entities with OpenAI embeddings (convenience function).
 
@@ -160,12 +226,16 @@ def load_dbpedia_openai(
         num_queries: Number of query vectors to use (default: 100)
         cache_dir: Optional cache directory for Hugging Face datasets (e.g., '../datasets/')
         streaming: If True, stream the dataset
+        use_100k_subset: If True and embedding_dim=1536, use the 100K dataset variant
 
     Returns:
         Dataset object with pre-computed embeddings
     """
     if embedding_dim == 1536:
-        return load_dbpedia_openai_1536(limit, num_queries, cache_dir, streaming)
+        if use_100k_subset:
+            return load_dbpedia_openai_1536_100k(limit, num_queries, cache_dir, streaming)
+        else:
+            return load_dbpedia_openai_1536(limit, num_queries, cache_dir, streaming)
     elif embedding_dim == 3072:
         return load_dbpedia_openai_3072(limit, num_queries, cache_dir, streaming)
     else:
@@ -184,6 +254,7 @@ if __name__ == "__main__":
     p.add_argument("--cache-dir", type=str, default="../datasets", help="HF cache directory")
     p.add_argument("--out", type=str, help="Output file (default: data/dbpedia-{dim}.npz)")
     p.add_argument("--streaming", action="store_true", help="Enable streaming")
+    p.add_argument("--use-100k", action="store_true", help="Use 100K subset (only for dim=1536)")
 
     args = p.parse_args()
 
@@ -193,9 +264,11 @@ if __name__ == "__main__":
         num_queries=args.num_queries,
         cache_dir=args.cache_dir,
         streaming=args.streaming,
+        use_100k_subset=args.use_100k,
     )
 
-    out_file = args.out or f"data/dbpedia-{args.dim}.npz"
+    suffix = "-100k" if args.use_100k else ""
+    out_file = args.out or f"data/dbpedia-{args.dim}{suffix}.npz"
     os.makedirs(os.path.dirname(out_file) if os.path.dirname(out_file) else ".", exist_ok=True)
     np.savez_compressed(
         out_file,

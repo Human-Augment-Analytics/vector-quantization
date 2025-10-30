@@ -64,7 +64,46 @@ python -m haag_vq.data.cohere_msmarco_loader \
 
 ---
 
-### 3. DBpedia OpenAI 1536-dim (Pre-embedded)
+### 3. DBpedia OpenAI 1536-dim 100K (Pre-embedded)
+
+**Source:** [Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-100K](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-100K)
+
+**Details:**
+- **Size:** 100K DBpedia entities (fast for testing)
+- **Embedding model:** OpenAI text-embedding-3-large
+- **Dimensions:** 1536
+- **Use case:** Quick experiments before scaling to 1M dataset
+
+**Python Usage:**
+```python
+from haag_vq.data import load_dbpedia_openai_1536_100k
+
+# Load full 100K dataset
+ds = load_dbpedia_openai_1536_100k(
+    cache_dir="../datasets",
+)
+
+# Or use convenience function
+from haag_vq.data import load_dbpedia_openai
+ds = load_dbpedia_openai(
+    embedding_dim=1536,
+    use_100k_subset=True,
+    cache_dir="../datasets",
+)
+```
+
+**Standalone Script:**
+```bash
+python -m haag_vq.data.dbpedia_loader \
+    --dim 1536 \
+    --use-100k \
+    --cache-dir ../datasets \
+    --out data/dbpedia-1536-100k.npz
+```
+
+---
+
+### 4. DBpedia OpenAI 1536-dim 1M (Pre-embedded)
 
 **Source:** [Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M)
 
@@ -72,7 +111,7 @@ python -m haag_vq.data.cohere_msmarco_loader \
 - **Size:** 1M DBpedia entities
 - **Embedding model:** OpenAI text-embedding-3-large
 - **Dimensions:** 1536
-- **Use case:** Knowledge graph entity embeddings
+- **Use case:** Large-scale knowledge graph entity embeddings
 
 **Python Usage:**
 ```python
@@ -96,7 +135,7 @@ python -m haag_vq.data.dbpedia_loader \
 
 ---
 
-### 4. DBpedia OpenAI 3072-dim (Pre-embedded)
+### 5. DBpedia OpenAI 3072-dim (Pre-embedded)
 
 **Source:** [Qdrant/dbpedia-entities-openai3-text-embedding-3-large-3072-1M](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-3072-1M)
 
@@ -137,7 +176,7 @@ python -m haag_vq.data.dbpedia_loader \
 
 ---
 
-### 5. MS MARCO (Text-based, requires embedding)
+### 6. MS MARCO (Text-based, requires embedding)
 
 **Details:**
 - Load from local TSV or Hugging Face
@@ -165,7 +204,7 @@ python -m haag_vq.data.msmarco_loader \
 
 ---
 
-### 6. Hugging Face Text Datasets (Generic loader)
+### 7. Hugging Face Text Datasets (Generic loader)
 
 **Details:**
 - Load any text dataset from Hugging Face

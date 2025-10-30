@@ -126,6 +126,7 @@ vq-benchmark plot
 
 ### User Guides
 - **[USAGE.md](documentation/USAGE.md)** - Complete CLI reference
+- **[METHODS.md](documentation/METHODS.md)** - Quantization methods overview
 - **[DATASETS.md](documentation/DATASETS.md)** - Dataset loading guide
 - **[SLURM_GUIDE.md](documentation/SLURM_GUIDE.md)** - ICE cluster guide
 - **[SLURM_SUPPORT_PLAN.md](documentation/SLURM_SUPPORT_PLAN.md)** - Production readiness
@@ -137,6 +138,22 @@ vq-benchmark plot
 
 ---
 
+## 🔧 Implemented Methods
+
+The project implements **5 vector quantization methods**:
+
+| Method | Type | Compression Ratio | Reference |
+|--------|------|-------------------|-----------|
+| **PQ** | Subspace Quantization | 32-512:1 | [Jégou et al., 2011](https://hal.inria.fr/inria-00514462v2/document) |
+| **OPQ** | Optimized Subspace | 32-512:1 | [Ge et al., 2013](https://www.microsoft.com/en-us/research/wp-content/uploads/2013/11/pami13opq.pdf) |
+| **SQ** | Scalar Quantization | 4:1 | Standard |
+| **SAQ** | Segmented CAQ | 8-32:1 | [Zhou et al., 2024](https://arxiv.org/abs/2410.06482) |
+| **RaBitQ** | Bit-level | 100:1+ | [Gao & Long, 2024](https://dl.acm.org/doi/pdf/10.1145/3654970) |
+
+See [METHODS.md](documentation/METHODS.md) for detailed descriptions, parameters, and usage examples.
+
+---
+
 ## 📊 Available Datasets
 
 The project includes loaders for several large-scale pre-embedded datasets:
@@ -144,7 +161,8 @@ The project includes loaders for several large-scale pre-embedded datasets:
 | Dataset | Size | Dimensions | Source |
 |---------|------|------------|--------|
 | **Cohere MS MARCO v2.1** | ~53.2M passages | ~1024 | [HuggingFace](https://huggingface.co/datasets/Cohere/msmarco-v2.1-embed-english-v3) |
-| **DBpedia OpenAI 1536** | 1M entities | 1536 | [HuggingFace](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M) |
+| **DBpedia OpenAI 1536 (100K)** | 100K entities | 1536 | [HuggingFace](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-100K) |
+| **DBpedia OpenAI 1536 (1M)** | 1M entities | 1536 | [HuggingFace](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-1536-1M) |
 | **DBpedia OpenAI 3072** | 1M entities | 3072 | [HuggingFace](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-3072-1M) |
 
 All datasets are **pre-embedded** (no embedding computation required) and automatically downloaded from Hugging Face.
@@ -183,7 +201,7 @@ See [SLURM_GUIDE.md](documentation/SLURM_GUIDE.md) for detailed instructions.
 
 ## 🗂 Repository Structure
 
-_TBD: As code and benchmark notebooks are added, include directory structure and setup instructions._
+The project is organized into modular components for benchmarking, methods, datasets, and metrics.
 
 ```
 haag-vector-quantization

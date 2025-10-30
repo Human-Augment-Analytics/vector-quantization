@@ -7,7 +7,11 @@ import typer
 
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
+from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
+from haag_vq.methods.rabit_quantization import RaBitQuantizer
+from haag_vq.methods.saq import SAQ
 from haag_vq.metrics.distortion import compute_distortion
+from haag_vq.utils.faiss_utils import MetricType
 from haag_vq.metrics.performance import measure_qps, time_compress, time_decompress
 from haag_vq.metrics.recall import evaluate_recall
 from haag_vq.data.datasets import Dataset, load_dummy_dataset
@@ -15,12 +19,21 @@ from haag_vq.utils.run_logger import log_run
 
 
 def run(
-    method: str = typer.Option("pq", help="Compression method: pq or sq"),
+    method: str = typer.Option("pq", help="Compression method: pq, opq, sq, saq, rabitq"),
     dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
     num_samples: int = typer.Option(10000, help="Number of samples to use"),
     dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
-    M: int = typer.Option(8, help="[PQ only] Number of subquantizers (M)"),
-    B: int = typer.Option(8, help="[PQ only] Bits per subvector index (B)"),
+    # PQ parameters
+    M: int = typer.Option(8, help="[PQ/OPQ] Number of subquantizers (M)"),
+    B: int = typer.Option(8, help="[PQ/OPQ] Bits per subvector index (B)"),
+    # SAQ parameters
+    saq_num_bits: int = typer.Option(4, help="[SAQ] Default per-dimension bitwidth"),
+    saq_total_bits: int = typer.Option(None, help="[SAQ] Total bit budget per vector (overrides num_bits)"),
+    saq_allowed_bits: str = typer.Option("0,2,4,6,8", help="[SAQ] Allowed per-segment bitwidths"),
+    saq_segments: int = typer.Option(None, help="[SAQ] Number of segments (auto if None)"),
+    # RaBitQ parameters
+    rabitq_metric: str = typer.Option("L2", help="[RaBitQ] Distance metric: L2 or IP"),
+    # General parameters
     with_recall: bool = typer.Option(False, help="Whether to compute Recall@k metrics"),
     ground_truth_path: str = typer.Option(None, help="Path to precomputed ground truth (.npy file)"),
     codebooks_dir: str = typer.Option(None, help="Directory to save codebooks (default: ./codebooks or $CODEBOOKS_DIR)"),
@@ -53,14 +66,39 @@ def run(
     else:
         raise ValueError(f"Unsupported dataset: {dataset}. Currently supported: dummy")
 
+    # Create model based on method
     if method == "pq":
         print(f"Fitting PQ (M={M}, B={B})...")
         model = ProductQuantizer(M=M, B=B)
+    elif method == "opq":
+        print(f"Fitting OPQ (M={M}, B={B})...")
+        model = OptimizedProductQuantizer(M=M, B=B)
     elif method == "sq":
         print("Fitting SQ...")
         model = ScalarQuantizer()
+    elif method == "saq":
+        # Parse allowed_bits
+        allowed_bits_list = [int(x.strip()) for x in saq_allowed_bits.split(",")]
+        if saq_total_bits is not None:
+            print(f"Fitting SAQ (total_bits={saq_total_bits}, allowed_bits={allowed_bits_list})...")
+            model = SAQ(
+                total_bits=saq_total_bits,
+                allowed_bits=allowed_bits_list,
+                n_segments=saq_segments,
+            )
+        else:
+            print(f"Fitting SAQ (num_bits={saq_num_bits})...")
+            model = SAQ(
+                num_bits=saq_num_bits,
+                allowed_bits=allowed_bits_list,
+                n_segments=saq_segments,
+            )
+    elif method == "rabitq":
+        metric_type = MetricType.L2 if rabitq_metric.upper() == "L2" else MetricType.INNER_PRODUCT
+        print(f"Fitting RaBitQ (metric={rabitq_metric})...")
+        model = RaBitQuantizer(metric_type=metric_type)
     else:
-        raise ValueError(f"Unsupported method: {method}")
+        raise ValueError(f"Unsupported method: {method}. Supported: pq, opq, sq, saq, rabitq")
 
     X = data.vectors
     fit_start = perf_counter()

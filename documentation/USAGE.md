@@ -50,11 +50,30 @@ Run a single benchmark configuration.
 ### Common Parameters
 
 ```bash
---method pq                    # Quantization method (pq or sq)
+--method pq                    # Quantization method: pq, opq, sq, saq, rabitq
 --num-samples 10000            # Number of samples to use
---num-chunks 8                 # PQ: number of chunks
---num-clusters 256             # PQ: clusters per chunk
 --with-recall                  # Compute recall metrics (requires ground truth)
+```
+
+### Method-Specific Parameters
+
+**PQ / OPQ:**
+```bash
+--M 8                          # Number of subquantizers
+--B 8                          # Bits per subvector (typically 8)
+```
+
+**SAQ:**
+```bash
+--saq-num-bits 4               # Default per-dimension bitwidth
+--saq-total-bits 4096          # Total bit budget (overrides num-bits)
+--saq-allowed-bits "0,2,4,6,8" # Allowed per-segment bitwidths
+--saq-segments 8               # Number of segments (auto if not set)
+```
+
+**RaBitQ:**
+```bash
+--rabitq-metric L2             # Distance metric: L2 or IP
 ```
 
 ### Path Configuration (for SLURM/ICE)
@@ -71,9 +90,29 @@ Run a single benchmark configuration.
 
 ### Examples
 
-**Basic run:**
+**Basic PQ run:**
 ```bash
-vq-benchmark run --dataset dummy --method pq
+vq-benchmark run --dataset dummy --method pq --M 8 --B 8
+```
+
+**OPQ run:**
+```bash
+vq-benchmark run --dataset dummy --method opq --M 8 --B 8
+```
+
+**SQ run:**
+```bash
+vq-benchmark run --dataset dummy --method sq
+```
+
+**SAQ run with bit budget:**
+```bash
+vq-benchmark run --dataset dummy --method saq --saq-total-bits 4096
+```
+
+**RaBitQ run:**
+```bash
+vq-benchmark run --dataset dummy --method rabitq --rabitq-metric L2
 ```
 
 **With custom paths (for SLURM):**
@@ -85,8 +124,8 @@ vq-benchmark run \
     --dataset dummy \
     --num-samples 100000 \
     --method pq \
-    --num-chunks 8 \
-    --num-clusters 256 \
+    --M 8 \
+    --B 8 \
     --ground-truth-path /scratch/$USER/msmarco_gt.npy \
     --with-recall
 ```

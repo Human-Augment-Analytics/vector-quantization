@@ -10,6 +10,7 @@ from .cohere_msmarco_loader import (
 from .dbpedia_loader import (
     load_dbpedia_openai,
     load_dbpedia_openai_1536,
+    load_dbpedia_openai_1536_100k,
     load_dbpedia_openai_3072,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "load_cohere_msmarco_queries",
     "load_dbpedia_openai",
     "load_dbpedia_openai_1536",
+    "load_dbpedia_openai_1536_100k",
     "load_dbpedia_openai_3072",
 ]
