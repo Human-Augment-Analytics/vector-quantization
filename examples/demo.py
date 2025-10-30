@@ -3,26 +3,29 @@
 Comprehensive demo of HAAG vector quantization benchmarking framework.
 
 Demonstrates:
-1. Individual method runs with all metrics
-2. Parameter sweeps to explore compression-distortion trade-offs
-3. Visualization of results
+1. Complete parameter sweep across ALL 5 implemented methods (PQ, OPQ, SQ, SAQ, RaBitQ)
+2. DBpedia 100K dataset (real pre-embedded data)
+3. All quantization metrics (reconstruction, pairwise, rank, recall)
+4. Automated visualization of results
 
 NEW FEATURES:
-- Pairwise distance distortion (how well distances are preserved)
-- Rank distortion (fraction of wrong top-k neighbors)
-- Parameter sweeps for systematic exploration
-- Automated plotting of trade-off curves
-- All metrics explained in METRICS_GUIDE.md
+- All 5 quantization methods: PQ, OPQ, SQ, SAQ, RaBitQ
+- Real dataset: DBpedia 100K (1536-dim OpenAI embeddings)
+- Comprehensive metrics and visualizations
 """
 
 import os
-# Suppress tokenizers parallelism warning when using git subprocess calls
+# Suppress tokenizers parallelism warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import numpy as np
-from haag_vq.data.datasets import load_dummy_dataset, load_huggingface_dataset
+from haag_vq.data import load_dbpedia_openai_1536_100k
 from haag_vq.methods.product_quantization import ProductQuantizer
+from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
+from haag_vq.methods.saq import SAQ
+from haag_vq.methods.rabit_quantization import RaBitQuantizer
+from haag_vq.utils.faiss_utils import MetricType
 from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.pairwise_distortion import compute_pairwise_distortion
 from haag_vq.metrics.rank_distortion import compute_rank_distortion
@@ -36,200 +39,156 @@ def print_section(title):
     print("=" * 70)
 
 
-def run_demo_quantizer(name, quantizer, data, with_all_metrics=True):
-    print(f"\n--- {name} ---")
+def load_dataset():
+    """Load DBpedia 100K dataset."""
+    print_section("Loading DBpedia 100K Dataset")
 
-    # Fit and compress
-    print(f"Fitting {name}...")
-    quantizer.fit(data.vectors)
-    compressed = quantizer.compress(data.vectors)
+    print("\nLoading DBpedia 100K (1536-dim OpenAI embeddings)...")
+    print("(This will auto-download on first run to ../datasets/)")
 
-    # 1. Reconstruction metrics
-    distortion = compute_distortion(data.vectors, compressed, quantizer)
-    compression_ratio = quantizer.get_compression_ratio(data.vectors)
+    data = load_dbpedia_openai_1536_100k(
+        cache_dir="../datasets",
+        limit=None,  # Use 10000 for faster demo
+    )
 
-    print(f"  Compression ratio:    {compression_ratio:.2f}x")
-    print(f"  Reconstruction MSE:   {distortion:.4f}")
+    print(f"✅ Dataset loaded: {data.vectors.shape}")
+    print(f"   Vectors: {data.vectors.shape[0]:,}")
+    print(f"   Dimensions: {data.vectors.shape[1]}")
+    print(f"   Queries: {data.queries.shape[0]}")
 
-    if with_all_metrics:
-        # 2. Pairwise distance preservation
-        pairwise = compute_pairwise_distortion(data.vectors, compressed, quantizer, num_pairs=500)
-        print(f"  Pairwise distortion:  {pairwise['mean']:.4f} (mean), {pairwise['max']:.4f} (max)")
-
-        # 3. Rank distortion
-        rank_dist = compute_rank_distortion(data, quantizer, k=10, num_queries=50)
-        print(f"  Rank distortion@10:   {rank_dist:.4f} ({rank_dist*100:.1f}% wrong neighbors)")
-
-        # 4. Recall
-        recall_metrics = evaluate_recall(data, quantizer, num_queries=50)
-        print(f"  Recall@10:            {recall_metrics['recall@10']:.4f}")
+    return data
 
 
-def demo_synthetic():
-    print_section("DEMO 1: Synthetic Gaussian Data")
-
-    print("\nGenerating 10,000 random 128-dimensional vectors...")
-    data = load_dummy_dataset(num_samples=10000, dim=128, seed=42)
-    print(f"Dataset shape: {data.vectors.shape}")
-
-    # Product Quantization
-    pq = ProductQuantizer(num_chunks=8, num_clusters=256)
-    run_demo_quantizer("Product Quantization (8 chunks, 256 clusters)", pq, data)
-
-    # Scalar Quantization
-    sq = ScalarQuantizer()
-    run_demo_quantizer("Scalar Quantization (8-bit)", sq, data)
-
-
-def demo_huggingface():
-    print_section("DEMO 2: Real Text Embeddings (Hugging Face)")
-
-    print("\nLoading STS-B dataset with Sentence-BERT embeddings...")
-    print("(This may take a moment on first run...)")
-
-    try:
-        data = load_huggingface_dataset(
-            dataset_name="stsb_multi_mt",
-            config_name="en",
-            model_name="all-MiniLM-L6-v2",
-            split="train"
-        )
-        print(f"Dataset shape: {data.vectors.shape}")
-
-        # Product Quantization
-        pq = ProductQuantizer(num_chunks=8, num_clusters=256)
-        run_demo_quantizer("Product Quantization (8 chunks, 256 clusters)", pq, data)
-
-        # Scalar Quantization
-        sq = ScalarQuantizer()
-        run_demo_quantizer("Scalar Quantization (8-bit)", sq, data)
-
-    except Exception as e:
-        print(f"\n⚠️  Hugging Face demo failed: {e}")
-        print("Make sure you have 'datasets' and 'sentence-transformers' installed:")
-        print("  pip install datasets sentence-transformers")
-
-
-def demo_parameter_sweep():
-    """Demonstrate parameter sweep functionality."""
+def demo_complete_sweep():
+    """Run comprehensive parameter sweep across all 5 methods."""
     import uuid
     from datetime import datetime
 
-    print_section("DEMO 3: Parameter Sweep for Trade-off Analysis")
+    print_section("Complete Parameter Sweep: All 5 Methods")
 
-    # Generate unique sweep ID for this demo run
-    sweep_id = f"demo_sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    # Generate unique sweep ID
+    sweep_id = f"dbpedia_sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     print(f"\n🔖 Sweep ID: {sweep_id}")
-    print(f"   This ID will be used to filter plots for this specific sweep")
 
-    print("\nRunning PQ and SQ with varying configurations to explore trade-offs...")
-    print("\nProduct Quantization (PQ) Parameters:")
-    print("  • num_chunks: How many pieces to split each vector into")
-    print("  • num_clusters: How many representative vectors per chunk")
-    print("\nScalar Quantization (SQ) Parameters:")
-    print("  • num_bits: Quantization precision (4, 8, or 16 bits)")
-    print("\nTrade-offs:")
-    print("  PQ: More chunks = higher compression but more distortion")
-    print("  SQ: Fewer bits = higher compression but less precision")
-    print()
+    # Load dataset
+    data = load_dataset()
 
-    # Use smaller dataset for faster demo
-    data = load_dummy_dataset(num_samples=5000, dim=128, seed=42)
-
-    # Sweep over different quantization methods and configurations
-    # Each config explores a different point in the compression-quality trade-off
+    # Define comprehensive sweep configurations
+    # For 1536 dimensions, M must divide evenly: 8, 12, 16, 24, 32, 48
     all_configs = [
-        # Product Quantization configs
-        {"method": "pq", "num_chunks": 4, "num_clusters": 128, "name": "PQ(4 chunks, 128 clusters)"},
-        {"method": "pq", "num_chunks": 8, "num_clusters": 128, "name": "PQ(8 chunks, 128 clusters)"},
-        {"method": "pq", "num_chunks": 8, "num_clusters": 256, "name": "PQ(8 chunks, 256 clusters)"},
-        {"method": "pq", "num_chunks": 16, "num_clusters": 256, "name": "PQ(16 chunks, 256 clusters)"},
-        # Scalar Quantization with different bit depths (for comparison)
-        {"method": "sq", "num_bits": 4, "name": "SQ(4-bit)"},
-        {"method": "sq", "num_bits": 8, "name": "SQ(8-bit)"},
-        {"method": "sq", "num_bits": 16, "name": "SQ(16-bit)"},
+        # PRODUCT QUANTIZATION (PQ) - Baseline subspace quantization
+        {"method": "pq", "M": 8, "B": 8, "name": "PQ(M=8, B=8)"},
+        {"method": "pq", "M": 16, "B": 8, "name": "PQ(M=16, B=8)"},
+        {"method": "pq", "M": 32, "B": 8, "name": "PQ(M=32, B=8)"},
+        {"method": "pq", "M": 16, "B": 6, "name": "PQ(M=16, B=6)"},
+
+        # OPTIMIZED PRODUCT QUANTIZATION (OPQ) - PQ with learned rotation
+        {"method": "opq", "M": 8, "B": 8, "name": "OPQ(M=8, B=8)"},
+        {"method": "opq", "M": 16, "B": 8, "name": "OPQ(M=16, B=8)"},
+        {"method": "opq", "M": 32, "B": 8, "name": "OPQ(M=32, B=8)"},
+
+        # SCALAR QUANTIZATION (SQ) - Per-dimension quantization
+        {"method": "sq", "name": "SQ(4-bit)"},
+        {"method": "sq", "name": "SQ(8-bit)"},
+
+        # SEGMENTED CAQ (SAQ) - Adaptive bit allocation
+        {"method": "saq", "num_bits": 4, "name": "SAQ(4 bits/dim)"},
+        {"method": "saq", "num_bits": 6, "name": "SAQ(6 bits/dim)"},
+        {"method": "saq", "total_bits": 3072, "name": "SAQ(3072 total bits)"},
+        {"method": "saq", "total_bits": 6144, "name": "SAQ(6144 total bits)"},
+
+        # RaBitQ - Extreme compression with theoretical bounds
+        {"method": "rabitq", "metric_type": "L2", "name": "RaBitQ(L2)"},
     ]
 
-    print(f"Testing {len(all_configs)} different configurations (PQ + SQ):\n")
+    print(f"\n🚀 Running {len(all_configs)} configurations across 5 methods:")
+    print("   • PQ (4 configs)")
+    print("   • OPQ (3 configs)")
+    print("   • SQ (2 configs)")
+    print("   • SAQ (4 configs)")
+    print("   • RaBitQ (1 config)")
+    print(f"\nDataset: DBpedia 100K ({data.vectors.shape[0]:,} vectors, {data.vectors.shape[1]} dims)")
+    print()
 
     for i, config in enumerate(all_configs, 1):
         method = config.pop("method")
         name = config.pop("name")
         print(f"[{i}/{len(all_configs)}] {name}")
 
-        # Create and train model
-        if method == "pq":
-            model = ProductQuantizer(num_chunks=config["num_chunks"], num_clusters=config["num_clusters"])
-        elif method == "sq":
-            model = ScalarQuantizer(num_bits=config["num_bits"])
+        try:
+            # Create model based on method
+            if method == "pq":
+                model = ProductQuantizer(M=config["M"], B=config["B"])
+            elif method == "opq":
+                model = OptimizedProductQuantizer(M=config["M"], B=config["B"])
+            elif method == "sq":
+                model = ScalarQuantizer()
+            elif method == "saq":
+                if "total_bits" in config:
+                    model = SAQ(total_bits=config["total_bits"], allowed_bits=[0, 2, 4, 6, 8])
+                else:
+                    model = SAQ(num_bits=config["num_bits"])
+            elif method == "rabitq":
+                model = RaBitQuantizer(metric_type=MetricType.L2)
 
-        model.fit(data.vectors)
-        compressed = model.compress(data.vectors)
+            # Train model
+            model.fit(data.vectors)
+            compressed = model.compress(data.vectors)
 
-        # Compute all metrics
-        metrics = {
-            "compression_ratio": model.get_compression_ratio(data.vectors),
-            "reconstruction_distortion": compute_distortion(data.vectors, compressed, model),
-            "pairwise_distortion_mean": compute_pairwise_distortion(data.vectors, compressed, model, num_pairs=200)["mean"],
-            "rank_distortion@10": compute_rank_distortion(data, model, k=10, num_queries=30),
-            "recall@10": evaluate_recall(data, model, num_queries=30)["recall@10"],
-        }
+            # Compute all metrics
+            metrics = {
+                "compression_ratio": model.get_compression_ratio(data.vectors),
+                "reconstruction_distortion": compute_distortion(data.vectors, compressed, model),
+                "pairwise_distortion_mean": compute_pairwise_distortion(data.vectors, compressed, model, num_pairs=500)["mean"],
+                "rank_distortion@10": compute_rank_distortion(data, model, k=10, num_queries=100),
+                "recall@10": evaluate_recall(data, model, num_queries=100)["recall@10"],
+            }
 
-        # Log to database (restore method to config for logging)
-        config_for_log = dict(config)
-        log_run(method=method, dataset="demo_sweep", metrics=metrics, config=config_for_log, sweep_id=sweep_id)
+            # Log to database
+            log_run(method=method, dataset="dbpedia-100k", metrics=metrics, config=config, sweep_id=sweep_id)
 
-        # Print summary
-        print(f"  Compression: {metrics['compression_ratio']:.1f}x | "
-              f"MSE: {metrics['reconstruction_distortion']:.3f} | "
-              f"Pairwise: {metrics['pairwise_distortion_mean']:.3f} | "
-              f"Recall@10: {metrics['recall@10']:.3f}")
+            # Print summary
+            print(f"  ✅ Compression: {metrics['compression_ratio']:.1f}x | "
+                  f"MSE: {metrics['reconstruction_distortion']:.4f} | "
+                  f"Pairwise: {metrics['pairwise_distortion_mean']:.4f} | "
+                  f"Rank@10: {metrics['rank_distortion@10']:.4f} | "
+                  f"Recall@10: {metrics['recall@10']:.4f}")
+
+        except Exception as e:
+            print(f"  ❌ Failed: {e}")
 
     print(f"\n✅ Sweep complete! Results logged to database.")
     print(f"   🔖 Sweep ID: {sweep_id}")
-    print(f"   Run 'vq-benchmark plot --sweep-id {sweep_id}' to visualize this sweep.")
 
-    # Return the sweep_id so demo_visualization can use it
     return sweep_id
 
 
-def demo_visualization(sweep_id=None):
-    """Demonstrate visualization capabilities.
+def demo_visualization(sweep_id):
+    """Generate comprehensive visualizations."""
+    print_section("Generating Visualizations")
 
-    Args:
-        sweep_id: Optional sweep ID to filter plots to
-    """
-    print_section("DEMO 4: Visualization of Results")
+    print("\nCreating plots from benchmark results...")
+    print(f"   Filtering to sweep: {sweep_id}")
 
-    print("\nGenerating plots from logged benchmark runs...")
-    if sweep_id:
-        print(f"   Filtering to sweep: {sweep_id}")
-
-    # Check if we have any runs
+    # Check database
     import sqlite3
     db_path = "logs/benchmark_runs.db"
 
     if not os.path.exists(db_path):
-        print("⚠️  No benchmark database found. Run the sweep demo first!")
+        print("⚠️  No benchmark database found!")
         return
 
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    if sweep_id:
-        cursor.execute("SELECT COUNT(*) FROM runs WHERE sweep_id = ?", (sweep_id,))
-    else:
-        cursor.execute("SELECT COUNT(*) FROM runs")
+    cursor.execute("SELECT COUNT(*) FROM runs WHERE sweep_id = ?", (sweep_id,))
     count = cursor.fetchone()[0]
     conn.close()
 
     if count == 0:
-        if sweep_id:
-            print(f"⚠️  No runs found for sweep {sweep_id}!")
-        else:
-            print("⚠️  No runs in database. Run the sweep demo first!")
+        print(f"⚠️  No runs found for sweep {sweep_id}!")
         return
 
-    print(f"Found {count} benchmark runs in database.")
+    print(f"Found {count} benchmark runs.")
 
     # Generate plots
     try:
@@ -242,74 +201,91 @@ def demo_visualization(sweep_id=None):
 
         runs = _load_runs_from_db(db_path, sweep_id=sweep_id)
 
-        # Create timestamped output directories
+        # Create output directories
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_dir_combined = f"demo_plots/{timestamp}/combined"
         output_dir_separate = f"demo_plots/{timestamp}/separate"
         os.makedirs(output_dir_combined, exist_ok=True)
         os.makedirs(output_dir_separate, exist_ok=True)
 
-        print(f"\nGenerating COMBINED plots in {output_dir_combined}/...")
-        _plot_compression_distortion(runs, output_dir_combined, "png", 150, separate_methods=False)
-        _plot_pairwise_distortion(runs, output_dir_combined, "png", 150, separate_methods=False)
-        _plot_rank_distortion(runs, output_dir_combined, "png", 150, separate_methods=False)
-        _plot_recall(runs, output_dir_combined, "png", 150, separate_methods=False)
-        print(f"  ✅ Combined plots generated")
+        print(f"\nGenerating COMBINED plots (all methods on one plot)...")
+        _plot_compression_distortion(runs, output_dir_combined, "png", 300, separate_methods=False)
+        _plot_pairwise_distortion(runs, output_dir_combined, "png", 300, separate_methods=False)
+        _plot_rank_distortion(runs, output_dir_combined, "png", 300, separate_methods=False)
+        _plot_recall(runs, output_dir_combined, "png", 300, separate_methods=False)
+        print(f"  ✅ Combined plots: {output_dir_combined}/")
 
-        print(f"\nGenerating SEPARATE plots in {output_dir_separate}/...")
-        _plot_compression_distortion(runs, output_dir_separate, "png", 150, separate_methods=True)
-        _plot_pairwise_distortion(runs, output_dir_separate, "png", 150, separate_methods=True)
-        _plot_rank_distortion(runs, output_dir_separate, "png", 150, separate_methods=True)
-        _plot_recall(runs, output_dir_separate, "png", 150, separate_methods=True)
-        print(f"  ✅ Separate plots generated (one per method)")
+        print(f"\nGenerating SEPARATE plots (one per method)...")
+        _plot_compression_distortion(runs, output_dir_separate, "png", 300, separate_methods=True)
+        _plot_pairwise_distortion(runs, output_dir_separate, "png", 300, separate_methods=True)
+        _plot_rank_distortion(runs, output_dir_separate, "png", 300, separate_methods=True)
+        _plot_recall(runs, output_dir_separate, "png", 300, separate_methods=True)
+        print(f"  ✅ Separate plots: {output_dir_separate}/")
 
-        print("\n📊 Plots generated successfully!")
-        print(f"   Combined: {output_dir_combined}/")
-        print(f"   Separate: {output_dir_separate}/")
+        print("\n📊 Visualizations complete!")
+        print(f"\n   Combined plots: {output_dir_combined}/")
+        print(f"      • compression_distortion_tradeoff.png")
+        print(f"      • pairwise_distortion.png")
+        print(f"      • rank_distortion.png")
+        print(f"      • recall_comparison.png")
+        print(f"\n   Separate plots: {output_dir_separate}/")
+        print(f"      • One set per method (pq, opq, sq, saq, rabitq)")
 
-    except ImportError:
-        print("⚠️  matplotlib not installed. Install with: pip install matplotlib")
+    except ImportError as e:
+        print(f"⚠️  Import failed: {e}")
+        print("Install matplotlib: pip install matplotlib")
     except Exception as e:
         print(f"⚠️  Plotting failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def main():
     print("\n" + "=" * 70)
-    print("  HAAG Vector Quantization Benchmarking Framework")
-    print("  Georgia Tech CS 8903 - Comprehensive Demo")
+    print("  HAAG Vector Quantization - Complete Benchmark Demo")
+    print("  DBpedia 100K Dataset | All 5 Methods")
     print("=" * 70)
-    print("\nFEATURES DEMONSTRATED:")
-    print("  • All quantization metrics (reconstruction, pairwise, rank)")
-    print("  • Parameter sweeps for systematic exploration")
-    print("  • Automated visualization of trade-offs")
-    print("  • See METRICS_GUIDE.md for detailed explanations")
+    print("\nMETHODS BENCHMARKED:")
+    print("  1. PQ (Product Quantization) - Baseline subspace quantization")
+    print("  2. OPQ (Optimized PQ) - PQ with learned rotation")
+    print("  3. SQ (Scalar Quantization) - Per-dimension quantization")
+    print("  4. SAQ (Segmented CAQ) - Adaptive bit allocation")
+    print("  5. RaBitQ - Extreme compression with theoretical bounds")
+    print("\nDATASET:")
+    print("  • DBpedia 100K entities (1536-dim OpenAI embeddings)")
+    print("  • Pre-embedded, auto-downloaded from HuggingFace")
+    print("\nMETRICS:")
+    print("  • Compression ratio")
+    print("  • Reconstruction distortion (MSE)")
+    print("  • Pairwise distance distortion")
+    print("  • Rank distortion (neighbor accuracy)")
+    print("  • Recall@10 (retrieval quality)")
     print("=" * 70)
 
-    # Demo 1: Synthetic data with single config
-    demo_synthetic()
+    # Run complete sweep
+    sweep_id = demo_complete_sweep()
 
-    # Demo 2: Real embeddings
-    demo_huggingface()
-
-    # Demo 3: Parameter sweep
-    sweep_id = demo_parameter_sweep()
-
-    # Demo 4: Visualization (using the sweep_id from the parameter sweep)
-    demo_visualization(sweep_id=sweep_id)
+    # Generate visualizations
+    demo_visualization(sweep_id)
 
     print("\n" + "=" * 70)
     print("  Demo Complete!")
     print("=" * 70)
-    print("\nWhat You Learned:")
-    print("  1. How to run benchmarks with all metrics")
-    print("  2. How to sweep parameters for trade-off analysis")
-    print("  3. How to visualize results")
+    print("\nWhat Was Done:")
+    print("  ✅ Loaded DBpedia 100K dataset (real OpenAI embeddings)")
+    print("  ✅ Benchmarked all 5 quantization methods")
+    print("  ✅ Computed comprehensive metrics")
+    print("  ✅ Generated visualizations")
+    print(f"\nResults:")
+    print(f"  📁 Database: logs/benchmark_runs.db")
+    print(f"  📊 Plots: demo_plots/")
+    print(f"  🔖 Sweep ID: {sweep_id}")
     print("\nNext Steps:")
-    print("  • Read METRICS_GUIDE.md to understand the metrics")
-    print("  • Check demo_plots/ for generated visualizations")
-    print("  • Run custom sweeps: vq-benchmark sweep --help")
-    print("  • Query results: sqlite3 logs/benchmark_runs.db")
-    print("  • Add new quantization methods by inheriting BaseQuantizer")
+    print("  • View plots in demo_plots/")
+    print("  • Query database: sqlite3 logs/benchmark_runs.db")
+    print("  • Run CLI sweeps: vq-benchmark sweep --help")
+    print(f"  • Filter plots: vq-benchmark plot --sweep-id {sweep_id}")
+    print("  • Read docs: documentation/METHODS.md")
     print()
 
 
