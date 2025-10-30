@@ -56,6 +56,15 @@ def load_dataset():
     print(f"   Dimensions: {data.vectors.shape[1]}")
     print(f"   Queries: {data.queries.shape[0]}")
 
+    # Compute ground truth if not already present (needed for recall/rank metrics)
+    if data.ground_truth is None:
+        print("\n⏳ Computing ground truth (k-nearest neighbors)...")
+        print("   This may take a minute for 100K vectors...")
+        from sklearn.metrics.pairwise import pairwise_distances
+        dist_matrix = pairwise_distances(data.queries, data.vectors, metric='euclidean')
+        data.ground_truth = dist_matrix.argsort(axis=1)
+        print("✅ Ground truth computed")
+
     return data
 
 
