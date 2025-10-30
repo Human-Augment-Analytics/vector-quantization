@@ -1,3 +1,4 @@
+from typing import Optional, List
 import numpy as np
 
 from .base_quantizer import BaseQuantizer
@@ -8,12 +9,12 @@ import faiss
 class ProductQuantizer(BaseQuantizer):
     def __init__(
         self,
-        M: int | None = None,
+        M: Optional[int] = None,
         B: int = 8,
         *,
         # Backward-compat kwargs (deprecated):
-        num_chunks: int | None = None,
-        num_clusters: int | None = None,
+        num_chunks: Optional[int] = None,
+        num_clusters: Optional[int] = None,
     ):
         """
         Product Quantization using FAISS' ProductQuantizer.
@@ -50,9 +51,9 @@ class ProductQuantizer(BaseQuantizer):
         self.num_clusters: int = 2 ** self.B
 
         # Learned state
-        self.codebooks: list[np.ndarray] = []  # list of (ksub, dsub)
-        self.chunk_dim: int | None = None
-        self.pq: faiss.ProductQuantizer | None = None
+        self.codebooks: List[np.ndarray] = []  # list of (ksub, dsub)
+        self.chunk_dim: Optional[int] = None
+        self.pq: Optional[faiss.ProductQuantizer] = None
 
     def fit(self, X: np.ndarray) -> None:
         X = np.asarray(X, dtype=np.float32)
