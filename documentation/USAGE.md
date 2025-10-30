@@ -22,6 +22,19 @@ vq-benchmark precompute-gt # Precompute ground truth k-NN
 vq-benchmark plot          # Visualize results
 ```
 
+## Available Datasets
+
+The project includes loaders for several large-scale datasets:
+
+- **dummy** - Random vectors for testing
+- **cohere-msmarco** - 53.2M pre-embedded passages (1024-dim)
+- **dbpedia-1536** - 1M DBpedia entities (1536-dim)
+- **dbpedia-3072** - 1M DBpedia entities (3072-dim)
+- **msmarco** - MS MARCO text (requires embedding)
+- **huggingface** - Generic HuggingFace text datasets
+
+See [DATASETS.md](DATASETS.md) for detailed usage, Python API, and examples.
+
 ---
 
 ## Command: `run`
@@ -31,7 +44,8 @@ Run a single benchmark configuration.
 ### Required Parameters
 
 - `--dataset`: Dataset to use (required - no default)
-  - Options: `dummy`, `huggingface`, or `msmarco` (when implemented)
+  - Options: `dummy`, `huggingface`, `msmarco`, `cohere-msmarco`, `dbpedia-1536`, `dbpedia-3072`
+  - See [DATASETS.md](DATASETS.md) for detailed information on available datasets
 
 ### Common Parameters
 
