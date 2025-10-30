@@ -15,14 +15,22 @@ from haag_vq.utils.faiss_utils import MetricType
 from haag_vq.metrics.performance import measure_qps, time_compress, time_decompress
 from haag_vq.metrics.recall import evaluate_recall
 from haag_vq.data.datasets import Dataset, load_dummy_dataset
+from haag_vq.data import (
+    load_cohere_msmarco_passages,
+    load_dbpedia_openai_1536_100k,
+    load_dbpedia_openai_1536,
+    load_dbpedia_openai_3072,
+)
 from haag_vq.utils.run_logger import log_run
 
 
 def run(
     method: str = typer.Option("pq", help="Compression method: pq, opq, sq, saq, rabitq"),
-    dataset: str = typer.Option(..., help="Dataset name: dummy, huggingface, or msmarco (REQUIRED)"),
-    num_samples: int = typer.Option(10000, help="Number of samples to use"),
-    dim: int = typer.Option(1024, help="Dimensionality for dummy dataset"),
+    dataset: str = typer.Option(..., help="Dataset name (REQUIRED): dummy, cohere-msmarco, dbpedia-100k, dbpedia-1536, dbpedia-3072"),
+    num_samples: int = typer.Option(10000, help="Number of samples to use (for dummy dataset)"),
+    dim: int = typer.Option(1024, help="Dimensionality (for dummy dataset)"),
+    dataset_limit: int = typer.Option(None, help="Limit number of vectors to load from dataset (None = load all available)"),
+    cache_dir: str = typer.Option("../datasets", help="Cache directory for Hugging Face datasets"),
     # PQ parameters
     M: int = typer.Option(8, help="[PQ/OPQ] Number of subquantizers (M)"),
     B: int = typer.Option(8, help="[PQ/OPQ] Bits per subvector index (B)"),
@@ -63,8 +71,44 @@ def run(
         # Override ground truth if provided
         if precomputed_gt is not None:
             data.ground_truth = precomputed_gt
+    elif dataset == "cohere-msmarco":
+        print(f"Loading Cohere MS MARCO dataset (limit={dataset_limit})...")
+        data = load_cohere_msmarco_passages(
+            limit=dataset_limit or 100_000,
+            cache_dir=cache_dir,
+            streaming=True,
+        )
+        if precomputed_gt is not None:
+            data.ground_truth = precomputed_gt
+    elif dataset == "dbpedia-100k":
+        print(f"Loading DBpedia 100K dataset (1536-dim)...")
+        data = load_dbpedia_openai_1536_100k(
+            limit=dataset_limit,
+            cache_dir=cache_dir,
+        )
+        if precomputed_gt is not None:
+            data.ground_truth = precomputed_gt
+    elif dataset == "dbpedia-1536":
+        print(f"Loading DBpedia 1M dataset (1536-dim, limit={dataset_limit})...")
+        data = load_dbpedia_openai_1536(
+            limit=dataset_limit or 100_000,
+            cache_dir=cache_dir,
+        )
+        if precomputed_gt is not None:
+            data.ground_truth = precomputed_gt
+    elif dataset == "dbpedia-3072":
+        print(f"Loading DBpedia 1M dataset (3072-dim, limit={dataset_limit})...")
+        data = load_dbpedia_openai_3072(
+            limit=dataset_limit or 100_000,
+            cache_dir=cache_dir,
+        )
+        if precomputed_gt is not None:
+            data.ground_truth = precomputed_gt
     else:
-        raise ValueError(f"Unsupported dataset: {dataset}. Currently supported: dummy")
+        raise ValueError(
+            f"Unsupported dataset: {dataset}. "
+            f"Supported: dummy, cohere-msmarco, dbpedia-100k, dbpedia-1536, dbpedia-3072"
+        )
 
     # Create model based on method
     if method == "pq":
