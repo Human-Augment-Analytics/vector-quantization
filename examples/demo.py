@@ -48,10 +48,14 @@ def load_dataset():
     print_section("Loading DBpedia 100K Dataset")
 
     print("\nLoading DBpedia 100K (1536-dim OpenAI embeddings)...")
-    print("(This will auto-download on first run to ../datasets/)")
+    print("(This will auto-download on first run to ../.cache/)")
+
+    # Use local cache directory with proper absolute path to avoid permission issues
+    cache_dir = os.path.abspath("../.cache/datasets")
+    os.makedirs(cache_dir, exist_ok=True)
 
     data = load_dbpedia_openai_1536_100k(
-        cache_dir="../datasets",
+        cache_dir=cache_dir,
         limit=None,  # Use 10000 for faster demo
     )
 
