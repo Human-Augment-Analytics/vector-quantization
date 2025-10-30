@@ -74,10 +74,14 @@ class ProductQuantizer(BaseQuantizer):
         self.codebooks = [np.array(centroids[m], copy=True) for m in range(self.M)]
 
     def compress(self, X: np.ndarray) -> np.ndarray:
+        if self.pq is None:
+            raise RuntimeError("ProductQuantizer must be fitted before compress(). Call fit() first.")
         X = np.asarray(X, dtype=np.float32)
         return self.pq.compute_codes(X)
 
     def decompress(self, codes: np.ndarray) -> np.ndarray:
+        if self.pq is None:
+            raise RuntimeError("ProductQuantizer must be fitted before decompress(). Call fit() first.")
         codes = np.asarray(codes)
         return self.pq.decode(codes)
 

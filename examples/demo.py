@@ -156,6 +156,8 @@ def demo_complete_sweep():
 
         except Exception as e:
             print(f"  ❌ Failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     print(f"\n✅ Sweep complete! Results logged to database.")
     print(f"   🔖 Sweep ID: {sweep_id}")
