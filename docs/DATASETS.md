@@ -6,6 +6,27 @@ This guide covers how to load and use datasets in the HAAG Vector Quantization p
 
 The project supports both **pre-embedded** datasets (vectors already computed) and **text datasets** that need embedding. Pre-embedded datasets are recommended for large-scale benchmarking as they avoid expensive embedding computation.
 
+## Memory Optimization
+
+**All data loaders have been optimized for minimal memory usage:**
+
+- **Pre-allocated numpy arrays**: Instead of building Python lists and converting to numpy (which uses ~2x memory during conversion), we pre-allocate numpy arrays directly
+- **Single-pass loading**: Vectors are loaded directly into the final array, avoiding temporary allocations
+- **Efficient ground truth**: Uses FAISS for memory-efficient k-NN computation instead of computing full distance matrices
+
+**Memory requirements** (approximate, for float32 vectors):
+
+| Dataset | Vectors | Dimensions | Memory Required |
+|---------|---------|------------|-----------------|
+| DBpedia 100K | 100,000 | 1536 | ~600 MB |
+| DBpedia 1M (1536) | 1,000,000 | 1536 | ~6 GB |
+| DBpedia 1M (3072) | 1,000,000 | 3072 | ~12 GB |
+| Cohere MS MARCO | 53,000,000 | ~1024 | ~200 GB (use `limit` or `streaming`) |
+
+**Formula**: `num_vectors × dimensions × 4 bytes (float32) ≈ memory needed`
+
+**Note**: For large datasets (>1M vectors), use the `limit` parameter to load a subset, or use `streaming=True` for the Cohere MS MARCO dataset.
+
 ---
 
 ## Available Datasets

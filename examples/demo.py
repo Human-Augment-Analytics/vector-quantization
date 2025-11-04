@@ -12,16 +12,30 @@ NEW FEATURES:
 - All 5 quantization methods: PQ, OPQ, SQ, SAQ, RaBitQ
 - Real dataset: DBpedia 100K (1536-dim OpenAI embeddings)
 - Comprehensive metrics and visualizations
+
+MEMORY REQUIREMENTS:
+- DBpedia 100K: ~600 MB for vectors + ~500 MB for processing = ~1.2 GB peak
+- With optimizations: Pre-allocated numpy arrays, FAISS ground truth, efficient loading
+- For more memory: Use limit parameter in load_dataset() or request compute node with >2GB
 """
 
 import os
 # Suppress tokenizers parallelism warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Set HuggingFace cache to local directory to avoid permission issues on shared storage
-os.environ["HF_HOME"] = os.path.abspath("../.cache/huggingface")
-os.environ["HF_DATASETS_CACHE"] = os.path.abspath("../.cache/huggingface/datasets")
+# Set HuggingFace cache directories
+# Priority: 1) Shared cache (if exists), 2) $TMPDIR, 3) Local .cache
+SHARED_CACHE = "/storage/ice-shared/cs8903onl/.cache/huggingface"
 
+if os.path.exists(SHARED_CACHE):
+    hf_cache_base = SHARED_CACHE
+elif "TMPDIR" in os.environ:
+    hf_cache_base = os.path.join(os.environ["TMPDIR"], "hf_cache")
+else:
+    hf_cache_base = os.path.abspath("../.cache/huggingface")
+
+os.environ["HF_HOME"] = hf_cache_base
+os.environ["HF_DATASETS_CACHE"] = os.path.join(hf_cache_base, "datasets")
 import numpy as np
 from haag_vq.data import load_dbpedia_openai_1536_100k
 from haag_vq.methods.product_quantization import ProductQuantizer
@@ -48,10 +62,16 @@ def load_dataset():
     print_section("Loading DBpedia 100K Dataset")
 
     print("\nLoading DBpedia 100K (1536-dim OpenAI embeddings)...")
-    print("(This will auto-download on first run to ../.cache/)")
 
-    # Use local cache directory with proper absolute path to avoid permission issues
-    cache_dir = os.path.abspath("../.cache/datasets")
+    # Use $TMPDIR if available (on PACE/ICE compute nodes), otherwise use local cache
+    # $TMPDIR provides fast local NVMe/SAS storage that's automatically cleaned up
+    if "TMPDIR" in os.environ:
+        cache_dir = os.path.join(os.environ["TMPDIR"], "hf_cache")
+        print(f"(Using fast local storage: $TMPDIR = {os.environ['TMPDIR']})")
+    else:
+        cache_dir = os.path.abspath("../.cache/datasets")
+        print("(Using local cache: ../.cache/)")
+
     os.makedirs(cache_dir, exist_ok=True)
 
     data = load_dbpedia_openai_1536_100k(
@@ -67,11 +87,24 @@ def load_dataset():
     # Compute ground truth if not already present (needed for recall/rank metrics)
     if data.ground_truth is None:
         print("\n⏳ Computing ground truth (k-nearest neighbors)...")
-        print("   This may take a minute for 100K vectors...")
-        from sklearn.metrics.pairwise import pairwise_distances
-        dist_matrix = pairwise_distances(data.queries, data.vectors, metric='euclidean')
-        data.ground_truth = dist_matrix.argsort(axis=1)
-        print("✅ Ground truth computed")
+        print("   Using FAISS for memory-efficient computation...")
+
+        import faiss
+
+        # Build a flat index for exact nearest neighbor search
+        # This is memory efficient and fast for 100K vectors
+        d = data.vectors.shape[1]
+        index = faiss.IndexFlatL2(d)
+        index.add(np.ascontiguousarray(data.vectors, dtype=np.float32))
+
+        # Search for top-k neighbors (we'll get top 100 to be safe for metrics)
+        k = 100
+        queries_for_search = np.ascontiguousarray(data.queries, dtype=np.float32)
+        distances, indices = index.search(queries_for_search, k)
+
+        # Store as ground truth (indices of nearest neighbors)
+        data.ground_truth = indices
+        print(f"✅ Ground truth computed: top-{k} neighbors for {len(data.queries)} queries")
 
     return data
 

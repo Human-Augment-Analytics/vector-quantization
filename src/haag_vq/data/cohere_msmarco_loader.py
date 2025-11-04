@@ -55,19 +55,33 @@ def load_cohere_msmarco_passages(
         streaming=streaming,
     )
 
-    # Extract embeddings
-    embeddings = []
-    count = 0
-    max_count = limit if limit is not None else float('inf')
-
+    # Extract embeddings - MEMORY OPTIMIZED: pre-allocate numpy array
+    # First, peek at the first item to determine dimension
     print(f"Extracting embeddings...")
-    for item in tqdm(ds, total=limit, desc="Loading vectors"):
+    iterator = iter(ds)
+    first_item = next(iterator)
+    first_emb = np.array(first_item['emb'], dtype=np.float32)
+    dimension = len(first_emb)
+
+    # Pre-allocate numpy array directly (saves ~2x memory vs list approach)
+    max_count = limit if limit is not None else 100_000  # Default reasonable limit for streaming
+    vectors = np.zeros((max_count, dimension), dtype=np.float32)
+
+    # Store first embedding
+    vectors[0] = first_emb
+    count = 1
+
+    # Continue with rest
+    for item in tqdm(iterator, total=limit - 1 if limit else None, desc="Loading vectors", initial=1):
         if count >= max_count:
             break
-        embeddings.append(item['emb'])
+        vectors[count] = item['emb']
         count += 1
 
-    vectors = np.array(embeddings, dtype=np.float32)
+    # Trim array if we loaded fewer vectors than expected
+    if count < max_count:
+        vectors = vectors[:count]
+
     print(f"Loaded {len(vectors)} vectors with dimension {vectors.shape[1]}")
 
     # Use first num_queries vectors as queries
@@ -106,9 +120,16 @@ def load_cohere_msmarco_queries(
         streaming=False,
     )
 
-    # Extract embeddings
-    embeddings = [item['emb'] for item in ds]
-    queries = np.array(embeddings, dtype=np.float32)
+    # Extract embeddings - MEMORY OPTIMIZED: pre-allocate numpy array
+    # First get dimension from first item
+    first_item = ds[0]
+    dimension = len(first_item['emb'])
+    num_queries = len(ds)
+
+    # Pre-allocate numpy array directly (saves ~2x memory vs list approach)
+    queries = np.zeros((num_queries, dimension), dtype=np.float32)
+    for i, item in enumerate(ds):
+        queries[i] = item['emb']
 
     print(f"Loaded {len(queries)} query vectors with dimension {queries.shape[1]}")
     return queries

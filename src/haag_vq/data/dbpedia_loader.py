@@ -55,21 +55,27 @@ def load_dbpedia_openai_1536(
         streaming=streaming,
     )
 
-    # Extract embeddings
-    embeddings = []
-    count = 0
+    # Extract embeddings - MEMORY OPTIMIZED: pre-allocate numpy array
     max_count = limit if limit is not None else 1_000_000
+    dimension = 1536
 
-    print(f"Extracting embeddings...")
-    iterator = tqdm(ds, total=min(limit or 1_000_000, 1_000_000), desc="Loading vectors")
+    # Pre-allocate numpy array directly (saves ~2x memory vs list approach)
+    vectors = np.zeros((max_count, dimension), dtype=np.float32)
+    count = 0
+
+    print(f"Extracting embeddings (pre-allocated for {max_count:,} vectors)...")
+    iterator = tqdm(ds, total=max_count, desc="Loading vectors")
 
     for item in iterator:
         if count >= max_count:
             break
-        embeddings.append(item['text-embedding-3-large-1536-embedding'])
+        vectors[count] = item['text-embedding-3-large-1536-embedding']
         count += 1
 
-    vectors = np.array(embeddings, dtype=np.float32)
+    # Trim array if we loaded fewer vectors than expected
+    if count < max_count:
+        vectors = vectors[:count]
+
     print(f"Loaded {len(vectors)} vectors with dimension {vectors.shape[1]}")
 
     # Use first num_queries vectors as queries
@@ -118,21 +124,28 @@ def load_dbpedia_openai_3072(
         streaming=streaming,
     )
 
-    # Extract embeddings (use the 3072-dim version, not the ada-002 1536-dim)
-    embeddings = []
-    count = 0
+    # Extract embeddings - MEMORY OPTIMIZED: pre-allocate numpy array
+    # (use the 3072-dim version, not the ada-002 1536-dim)
     max_count = limit if limit is not None else 1_000_000
+    dimension = 3072
 
-    print(f"Extracting embeddings...")
-    iterator = tqdm(ds, total=min(limit or 1_000_000, 1_000_000), desc="Loading vectors")
+    # Pre-allocate numpy array directly (saves ~2x memory vs list approach)
+    vectors = np.zeros((max_count, dimension), dtype=np.float32)
+    count = 0
+
+    print(f"Extracting embeddings (pre-allocated for {max_count:,} vectors)...")
+    iterator = tqdm(ds, total=max_count, desc="Loading vectors")
 
     for item in iterator:
         if count >= max_count:
             break
-        embeddings.append(item['text-embedding-3-large-3072-embedding'])
+        vectors[count] = item['text-embedding-3-large-3072-embedding']
         count += 1
 
-    vectors = np.array(embeddings, dtype=np.float32)
+    # Trim array if we loaded fewer vectors than expected
+    if count < max_count:
+        vectors = vectors[:count]
+
     print(f"Loaded {len(vectors)} vectors with dimension {vectors.shape[1]}")
 
     # Use first num_queries vectors as queries
@@ -181,21 +194,28 @@ def load_dbpedia_openai_1536_100k(
         streaming=streaming,
     )
 
-    # Extract embeddings
-    embeddings = []
-    count = 0
+    # Extract embeddings - MEMORY OPTIMIZED: pre-allocate numpy array
+    # This avoids Python list overhead and temporary allocations during conversion
     max_count = limit if limit is not None else 100_000
+    dimension = 1536
 
-    print(f"Extracting embeddings...")
-    iterator = tqdm(ds, total=min(limit or 100_000, 100_000), desc="Loading vectors")
+    # Pre-allocate numpy array directly (saves ~2x memory vs list approach)
+    vectors = np.zeros((max_count, dimension), dtype=np.float32)
+    count = 0
+
+    print(f"Extracting embeddings (pre-allocated for {max_count:,} vectors)...")
+    iterator = tqdm(ds, total=max_count, desc="Loading vectors")
 
     for item in iterator:
         if count >= max_count:
             break
-        embeddings.append(item['text-embedding-3-large-1536-embedding'])
+        vectors[count] = item['text-embedding-3-large-1536-embedding']
         count += 1
 
-    vectors = np.array(embeddings, dtype=np.float32)
+    # Trim array if we loaded fewer vectors than expected
+    if count < max_count:
+        vectors = vectors[:count]
+
     print(f"Loaded {len(vectors)} vectors with dimension {vectors.shape[1]}")
 
     # Use first num_queries vectors as queries

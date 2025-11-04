@@ -182,20 +182,51 @@ vq-benchmark plot          # Visualize results
 
 ---
 
-## 🏔️ Running on ICE Cluster
+## 🏔️ Running on PACE/ICE Cluster
 
+**Production-ready with automatic optimizations:**
+
+### Quick Start (5 minutes)
 ```bash
-# 1. Precompute ground truth (one-time)
-sbatch slurm/precompute_gt.slurm
+# 1. SSH and navigate
+ssh <username>@login-ice.pace.gatech.edu
+cd /storage/ice-shared/cs8903onl/vector_quantization/vector-quantization
 
-# 2. Run sweeps
-sbatch slurm/sweep.slurm
+# 2. Setup (first time only)
+module load python/3.12
+source .venv312/bin/activate
+mkdir -p logs results
 
-# 3. Visualize locally
-vq-benchmark plot
+# 3. Run sweep
+./sweep dbpedia-100k  # ~2 hours, 100K vectors, all methods
+
+# 4. Monitor
+squeue -u $USER
+tail -f logs/dbp100k_*.out
 ```
 
-See [SLURM_GUIDE.md](documentation/SLURM_GUIDE.md) for detailed instructions.
+**📚 Complete Guides:**
+- **[docs/QUICKSTART_PACE.md](docs/QUICKSTART_PACE.md)** - Get running in 5 minutes
+- **[docs/RUNNING_SWEEPS.md](docs/RUNNING_SWEEPS.md)** - Production sweep guide
+- **[docs/RUNNING_ON_PACE.md](docs/RUNNING_ON_PACE.md)** - Detailed PACE/ICE documentation
+- **[docs/REPOSITORY_STRUCTURE.md](docs/REPOSITORY_STRUCTURE.md)** - File organization
+
+### Available Sweeps
+
+| Command | Dataset | Vectors | Time | Resources |
+|---------|---------|---------|------|-----------|
+| `./sweep dbpedia-100k` | DBpedia 100K | 100K | 2 hrs | 4GB RAM |
+| `./sweep dbpedia-1m-subset` | DBpedia 1M | 500K | 4 hrs | 8GB RAM |
+| `./sweep dbpedia-1m-full` | DBpedia 1M | 1M | 8 hrs | 12GB RAM |
+| `./sweep custom <args>` | Custom | Variable | Variable | Variable |
+
+### Key Features
+- ✅ Configurable via CLI: `python scripts/run_sweep.py --dataset <name> --methods <list>`
+- ✅ Automatic use of `$TMPDIR` for fast local NVMe storage
+- ✅ Memory-efficient pre-allocated arrays (~50% reduction)
+- ✅ FAISS ground truth computation (>99% memory savings)
+- ✅ Dimension-aware parameter generation
+- ✅ Results logged to SQLite database
 
 ---
 
