@@ -67,21 +67,14 @@ sqlite> SELECT method, config, compression_ratio, mse, recall_at_10
 
 | Name | Vectors | Dims | Memory | Use Case |
 |------|---------|------|--------|----------|
-
-| Name | Vectors | Dims | Memory | Use Case |
-|------|---------|------|--------|----------|
 | `dbpedia-100k` | 100K | 1536 | ~1 GB | Quick testing |
 | `dbpedia-1536` | 1M | 1536 | ~6 GB | Production |
 | `dbpedia-3072` | 1M | 3072 | ~12 GB | High-dimensional |
-| `cohere-msmarco` | 53M | 1024 | ~200 GB | Full 53M: use `streaming-sweep` |
+| `cohere-msmarco` | 53M | 1024 | Streaming | Use `--dataset-limit` |
 
 **Common options:**
-- `--dataset-limit INT`: Limit vectors loaded (for regular `sweep` command)
+- `--dataset-limit INT`: Limit vectors loaded
 - `--cache-dir PATH`: HuggingFace cache (default: `../datasets`)
-
-**MS MARCO Options:**
-1. **Subset testing**: Use `sweep` with `--dataset-limit 100000` (up to ~1M fits in memory)
-2. **Full 53M dataset**: Use `streaming-sweep` command (batch compression, no memory limit)
 
 ---
 
@@ -273,7 +266,7 @@ done
 vq-benchmark plot
 ```
 
-### MS MARCO Subset sweep (100K-1M vectors)
+### Full MS MARCO sweep (all methods)
 
 **Locally:**
 ```bash
@@ -298,36 +291,6 @@ done
 vq-benchmark plot --dataset cohere-msmarco
 ```
 
-### MS MARCO FULL 53M dataset (streaming batch compression)
-
-**Locally:**
-```bash
-# Run streaming compression (trains on 1M, compresses all 53M in batches)
-vq-benchmark streaming-sweep --method pq --training-size 1000000 --batch-size 10000
-
-# Try different methods
-vq-benchmark streaming-sweep --method opq --training-size 1000000
-vq-benchmark streaming-sweep --method sq --training-size 500000
-```
-
-**On PACE (recommended for full 53M):**
-```bash
-# PQ on full 53M (~24 hours, 16GB RAM, 50GB NVMe for compressed batches)
-sbatch --mem=16G --time=24:00:00 --tmp=50G -C localNVMe \
-    --wrap="vq-benchmark streaming-sweep --method pq --training-size 1000000 --batch-size 10000"
-
-# OPQ on full 53M (slower training)
-sbatch --mem=20G --time=30:00:00 --tmp=50G -C localNVMe \
-    --wrap="vq-benchmark streaming-sweep --method opq --training-size 1000000 --batch-size 10000"
-```
-
-**Streaming sweep options:**
-- `--training-size`: Vectors to train quantizer (default: 1M)
-- `--batch-size`: Batch size for compression (default: 10K)
-- `--max-batches`: Limit batches (default: None = all ~5300 batches)
-- `--output-dir`: Where to save compressed batches (default: `compressed_msmarco/`)
-```
-
 ### Deep PQ parameter sweep
 
 ```bash
@@ -347,69 +310,6 @@ vq-benchmark sweep --dataset dbpedia-1536 --method opq --opq-quantizers "8,16,32
 sqlite3 logs/benchmark_runs.db "
 SELECT method, config, compression_ratio, recall_at_10
 FROM benchmark_runs WHERE method IN ('pq','opq') ORDER BY method, config"
-```
-
----
-
-## Ground Truth for Recall Metrics
-
-Ground truth k-nearest neighbors are required for computing recall and rank distortion metrics.
-
-### Automatic Ground Truth (Default)
-
-For datasets ≤100K vectors, ground truth is computed automatically using FAISS:
-
-```bash
-# dbpedia-100k: Ground truth computed automatically (fast with FAISS)
-vq-benchmark sweep --dataset dbpedia-100k --method pq
-```
-
-### Large Datasets (>100K vectors)
-
-For large datasets (1M+), ground truth is **skipped by default** to save memory.
-
-**Option 1: Precompute ground truth separately (recommended)**
-
-```bash
-# 1. Save dataset vectors to .npy file first
-python -c "
-from haag_vq.data import load_dbpedia_openai_1536
-import numpy as np
-data = load_dbpedia_openai_1536(limit=None)
-np.save('dbpedia_1536_vectors.npy', data.vectors)
-"
-
-# 2. Precompute ground truth using FAISS (efficient, GPU-accelerated if available)
-vq-benchmark precompute-gt \
-    --vectors-path dbpedia_1536_vectors.npy \
-    --output-path dbpedia_1536_ground_truth.npy \
-    --num-queries 100 \
-    --k 100
-
-# 3. Run sweep with precomputed ground truth
-vq-benchmark sweep --dataset dbpedia-1536 --method pq \
-    --ground-truth-path dbpedia_1536_ground_truth.npy
-```
-
-**Option 2: Skip recall metrics**
-
-```bash
-# Run without recall/rank distortion metrics
-vq-benchmark sweep --dataset dbpedia-1536 --method pq \
-    --with-recall false --with-rank false
-```
-
-**PACE Example (precompute ground truth with GPU):**
-
-```bash
-# Use GPU for faster ground truth computation on large datasets
-sbatch --mem=32G --time=4:00:00 --gres=gpu:1 \
-    --wrap="vq-benchmark precompute-gt \
-        --vectors-path /scratch/\$USER/msmarco_vectors.npy \
-        --output-path /scratch/\$USER/msmarco_gt.npy \
-        --num-queries 1000 \
-        --k 100 \
-        --use-gpu"
 ```
 
 ---

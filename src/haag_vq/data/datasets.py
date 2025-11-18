@@ -5,6 +5,34 @@ from sklearn.metrics import pairwise_distances
 from datasets import load_dataset # Importing the necessary Hugging Face library NK 10/3/2025
 from sentence_transformers import SentenceTransformer # Need the SBERT model NK 10/3/2025
 
+def compute_ground_truth_faiss(queries: np.ndarray, vectors: np.ndarray, k: int = 100) -> np.ndarray:
+    """
+    Compute ground truth k-nearest neighbors using FAISS (memory-efficient).
+
+    Args:
+        queries: Query vectors (num_queries x dimension)
+        vectors: Database vectors (num_vectors x dimension)
+        k: Number of nearest neighbors to compute
+
+    Returns:
+        Ground truth indices (num_queries x k)
+    """
+    try:
+        import faiss
+    except ImportError:
+        print("WARNING: FAISS not available, falling back to sklearn pairwise_distances")
+        print("Install FAISS for better performance: pip install faiss-cpu")
+        dist_matrix = pairwise_distances(queries, vectors)
+        return dist_matrix.argsort(axis=1)[:, :k]
+
+    # Use FAISS for efficient k-NN search
+    dimension = vectors.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(vectors.astype(np.float32))
+
+    _, indices = index.search(queries.astype(np.float32), k)
+    return indices
+
 class Dataset:
     def __init__(
         self,
@@ -41,11 +69,9 @@ class Dataset:
             self.ground_truth = None
             print("WARNING: Ground truth computation skipped. Recall metrics will not be available.")
         else:
-            # Compute ground truth on-the-fly (WARNING: memory-intensive for large datasets!)
+            # Compute ground truth using FAISS (memory-efficient)
             print(f"Computing ground truth for {len(self.queries)} queries x {len(self.vectors)} vectors...")
-            print("WARNING: This computes full distance matrix and may cause OOM for large datasets!")
-            dist_matrix = distance_metric(self.queries, self.vectors)
-            self.ground_truth = dist_matrix.argsort(axis=1)
+            self.ground_truth = compute_ground_truth_faiss(self.queries, self.vectors, k=100)
 
         self.distance_metric = distance_metric
 

@@ -81,11 +81,11 @@ def load_dbpedia_openai_1536(
     # Use first num_queries vectors as queries
     queries = vectors[:num_queries] if len(vectors) >= num_queries else vectors[:len(vectors)]
 
-    # Skip ground truth computation for large datasets
+    # Compute ground truth with FAISS (fast even for 1M vectors with 100 queries)
     return Dataset(
         vectors=vectors,
         queries=queries,
-        skip_ground_truth=True,
+        skip_ground_truth=False,  # FAISS makes this fast
     )
 
 
@@ -151,11 +151,11 @@ def load_dbpedia_openai_3072(
     # Use first num_queries vectors as queries
     queries = vectors[:num_queries] if len(vectors) >= num_queries else vectors[:len(vectors)]
 
-    # Skip ground truth computation for large datasets
+    # Compute ground truth with FAISS (fast even for 1M vectors with 100 queries)
     return Dataset(
         vectors=vectors,
         queries=queries,
-        skip_ground_truth=True,
+        skip_ground_truth=False,  # FAISS makes this fast
     )
 
 
@@ -221,12 +221,12 @@ def load_dbpedia_openai_1536_100k(
     # Use first num_queries vectors as queries
     queries = vectors[:num_queries] if len(vectors) >= num_queries else vectors[:len(vectors)]
 
-    # For 100K dataset, we can optionally compute ground truth (not too large)
-    skip_gt = limit is None or limit > 10_000
+    # For 100K dataset, compute ground truth (fast with FAISS)
+    # This enables recall and rank distortion metrics
     return Dataset(
         vectors=vectors,
         queries=queries,
-        skip_ground_truth=skip_gt,
+        skip_ground_truth=False,  # Always compute for 100K - it's manageable
     )
 
 
