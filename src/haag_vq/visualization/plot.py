@@ -93,6 +93,12 @@ def plot(
     # 5. Method comparison table
     _generate_comparison_table(runs, output_with_timestamp)
 
+    # 6. Pareto frontier plot
+    _plot_pareto_frontier(runs, output_with_timestamp, format, dpi)
+
+    # 7. Multi-dimensional radar chart
+    _plot_radar_chart(runs, output_with_timestamp, format, dpi)
+
     print("\n" + "=" * 70)
     print("  Plots Generated Successfully!")
     print("=" * 70)
@@ -108,6 +114,8 @@ def plot(
         print(f"  • pairwise_distortion.{format}")
         print(f"  • rank_distortion.{format}")
         print(f"  • recall_comparison.{format}")
+    print(f"  • pareto_frontier.{format}")
+    print(f"  • method_radar_comparison.{format}")
     print(f"  • comparison_table.txt")
 
 
@@ -532,3 +540,188 @@ def _generate_comparison_table(runs: List[Dict], output: str):
             f.write(row)
 
         f.write("\n" + "=" * 100 + "\n")
+
+
+def _plot_pareto_frontier(runs: List[Dict], output: str, format: str, dpi: int):
+    """Plot Pareto frontier showing optimal compression-recall tradeoffs."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Group by method
+    methods = {}
+    for run in runs:
+        method = run["method"]
+        metrics = run["metrics"]
+
+        if "compression_ratio" not in metrics or "recall@10" not in metrics:
+            continue
+
+        if method not in methods:
+            methods[method] = {"compression": [], "recall": [], "points": []}
+
+        methods[method]["compression"].append(metrics["compression_ratio"])
+        methods[method]["recall"].append(metrics["recall@10"])
+        methods[method]["points"].append((metrics["compression_ratio"], metrics["recall@10"]))
+
+    def is_pareto_optimal(point, points):
+        """Check if a point is on the Pareto frontier (maximizing both compression and recall)."""
+        comp, recall = point
+        for other_comp, other_recall in points:
+            # Another point dominates if it has both higher compression AND higher recall
+            if other_comp > comp and other_recall > recall:
+                return False
+        return True
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    colors = {"pq": "tab:blue", "opq": "tab:green", "sq": "tab:orange",
+              "saq": "tab:red", "rabitq": "tab:purple"}
+    markers = {"pq": "o", "opq": "^", "sq": "s", "saq": "D", "rabitq": "v"}
+
+    all_points = []
+    for method, data in methods.items():
+        all_points.extend(data["points"])
+
+        # Plot all points
+        ax.scatter(
+            data["compression"],
+            data["recall"],
+            marker=markers.get(method, "o"),
+            label=method.upper(),
+            s=100,
+            alpha=0.6,
+            color=colors.get(method, None),
+            edgecolors='black',
+            linewidths=1
+        )
+
+    # Identify and highlight Pareto frontier
+    pareto_points = [p for p in all_points if is_pareto_optimal(p, all_points)]
+    if pareto_points:
+        pareto_points.sorted = sorted(pareto_points, key=lambda x: x[0])
+        pareto_comp = [p[0] for p in pareto_points]
+        pareto_recall = [p[1] for p in pareto_points]
+
+        ax.scatter(
+            pareto_comp,
+            pareto_recall,
+            s=200,
+            facecolors='none',
+            edgecolors='gold',
+            linewidths=3,
+            label='Pareto Frontier',
+            zorder=10
+        )
+
+    ax.set_xlabel("Compression Ratio (higher is better)", fontsize=13, fontweight='bold')
+    ax.set_ylabel("Recall@10 (higher is better)", fontsize=13, fontweight='bold')
+    ax.set_title("Pareto Frontier: Optimal Compression-Accuracy Tradeoffs",
+                 fontsize=15, fontweight="bold", pad=20)
+    ax.legend(loc='best', fontsize=11, framealpha=0.9)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_xscale("log")
+
+    plt.tight_layout()
+    plt.savefig(f"{output}/pareto_frontier.{format}", dpi=dpi, bbox_inches='tight')
+    plt.close()
+
+
+def _plot_radar_chart(runs: List[Dict], output: str, format: str, dpi: int):
+    """Generate radar/spider chart comparing methods across multiple dimensions."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Aggregate metrics by method (take mean of all runs per method)
+    methods_data = {}
+    for run in runs:
+        method = run["method"]
+        metrics = run["metrics"]
+
+        if method not in methods_data:
+            methods_data[method] = {
+                "compression_ratios": [],
+                "recalls": [],
+                "pairwise_distortions": [],
+                "reconstruction_distortions": []
+            }
+
+        if "compression_ratio" in metrics:
+            methods_data[method]["compression_ratios"].append(metrics["compression_ratio"])
+        if "recall@10" in metrics:
+            methods_data[method]["recalls"].append(metrics["recall@10"])
+        if "pairwise_distortion_mean" in metrics:
+            methods_data[method]["pairwise_distortions"].append(metrics["pairwise_distortion_mean"])
+        if "reconstruction_distortion" in metrics:
+            methods_data[method]["reconstruction_distortions"].append(metrics["reconstruction_distortion"])
+
+    # Calculate averages and normalize to 0-1 scale
+    normalized_data = {}
+    all_compression = []
+    all_recall = []
+    all_pairwise = []
+    all_recon = []
+
+    for method, data in methods_data.items():
+        if data["compression_ratios"]:
+            all_compression.extend(data["compression_ratios"])
+        if data["recalls"]:
+            all_recall.extend(data["recalls"])
+        if data["pairwise_distortions"]:
+            all_pairwise.extend(data["pairwise_distortions"])
+        if data["reconstruction_distortions"]:
+            all_recon.extend(data["reconstruction_distortions"])
+
+    for method, data in methods_data.items():
+        avg_compression = np.mean(data["compression_ratios"]) if data["compression_ratios"] else 0
+        avg_recall = np.mean(data["recalls"]) if data["recalls"] else 0
+        avg_pairwise = np.mean(data["pairwise_distortions"]) if data["pairwise_distortions"] else 0
+        avg_recon = np.mean(data["reconstruction_distortions"]) if data["reconstruction_distortions"] else 0
+
+        # Normalize (higher is better for all metrics after transformation)
+        norm_compression = (avg_compression - min(all_compression)) / (max(all_compression) - min(all_compression)) if all_compression else 0
+        norm_recall = (avg_recall - min(all_recall)) / (max(all_recall) - min(all_recall)) if all_recall else 0
+        # Invert distortion metrics (lower distortion is better, so invert to make higher better)
+        norm_pairwise = 1 - ((avg_pairwise - min(all_pairwise)) / (max(all_pairwise) - min(all_pairwise))) if all_pairwise else 0
+        norm_recon = 1 - ((avg_recon - min(all_recon)) / (max(all_recon) - min(all_recon))) if all_recon else 0
+
+        normalized_data[method] = {
+            "Compression": norm_compression,
+            "Recall": norm_recall,
+            "Distance\nPreservation": norm_pairwise,
+            "Reconstruction\nQuality": norm_recon
+        }
+
+    # Create radar chart
+    categories = ["Compression", "Recall", "Distance\nPreservation", "Reconstruction\nQuality"]
+    num_vars = len(categories)
+
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    angles += angles[:1]  # Complete the circle
+
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(projection='polar'))
+
+    colors = {"pq": "tab:blue", "opq": "tab:green", "sq": "tab:orange",
+              "saq": "tab:red", "rabitq": "tab:purple"}
+
+    for method, data in normalized_data.items():
+        values = [data[cat] for cat in categories]
+        values += values[:1]  # Complete the circle
+
+        ax.plot(angles, values, 'o-', linewidth=2,
+                label=method.upper(), color=colors.get(method, None))
+        ax.fill(angles, values, alpha=0.15, color=colors.get(method, None))
+
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(categories, size=11, fontweight='bold')
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(['0.25', '0.5', '0.75', '1.0'], size=9)
+    ax.grid(True, linestyle='--', alpha=0.4)
+
+    ax.set_title("Multi-Dimensional Method Comparison\n(higher is better for all dimensions)",
+                 fontsize=15, fontweight="bold", pad=30)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(f"{output}/method_radar_comparison.{format}", dpi=dpi, bbox_inches='tight')
+    plt.close()

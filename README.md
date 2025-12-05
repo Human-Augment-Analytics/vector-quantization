@@ -269,7 +269,11 @@ for method in pq opq sq saq rabitq; do
   vq-benchmark sweep --dataset dbpedia-100k --method $method
 done
 
-# Then visualize
+# Visualize - creates comprehensive analysis plots:
+# • Compression-distortion tradeoffs
+# • Pareto frontier showing optimal configurations
+# • Radar chart for multi-dimensional comparison
+# • Recall and rank distortion analysis
 vq-benchmark plot
 ```
 
