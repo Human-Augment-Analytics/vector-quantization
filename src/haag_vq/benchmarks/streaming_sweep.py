@@ -4,15 +4,13 @@ Streaming batch compression for large datasets (e.g., MS MARCO 53M).
 This module implements true streaming compression where:
 1. Train quantizer on a subset (e.g., 1M vectors)
 2. Stream full dataset in batches
-3. Compress each batch
-4. Save compressed batches to disk
-5. Evaluate on compressed data
+3. Compress each batch and compute metrics on-the-fly
+4. Aggregate metrics across the full dataset
 
 This allows benchmarking on datasets that don't fit in memory.
 """
 
 import os
-from pathlib import Path
 from typing import Optional
 import uuid
 from datetime import datetime
@@ -44,7 +42,6 @@ def streaming_sweep(
     batch_size: int = typer.Option(10_000, help="Batch size for streaming compression"),
     max_batches: Optional[int] = typer.Option(None, help="Max batches to compress (None = all ~53M)"),
     cache_dir: str = typer.Option("../datasets", help="HuggingFace cache directory"),
-    output_dir: str = typer.Option("compressed_msmarco", help="Directory to save compressed batches"),
     # Method-specific parameters
     pq_subquantizers: str = typer.Option("16", help="[PQ] M value"),
     pq_bits: str = typer.Option("8", help="[PQ] B value"),
@@ -78,10 +75,6 @@ def streaming_sweep(
     print(f"Batch size: {batch_size:,}")
     print(f"Max batches: {max_batches or 'ALL (~5300 batches for 53M)'}")
     print("=" * 70)
-
-    # Create output directory
-    output_path = Path(output_dir) / sweep_id
-    output_path.mkdir(parents=True, exist_ok=True)
 
     # Step 1: Load training subset
     print(f"\n[1/4] Loading {training_size:,} vectors for training...")
@@ -148,6 +141,10 @@ def streaming_sweep(
     total_compressed = 0
     batch_vectors = []
 
+    # Accumulators for streaming metrics
+    total_mse_sum = 0.0
+    total_vectors_for_mse = 0
+
     iterator = iter(ds)
 
     while True:
@@ -164,13 +161,14 @@ def streaming_sweep(
         if not batch_vectors:
             break
 
-        # Compress batch
+        # Compress batch and compute metrics
         batch_array = np.array(batch_vectors, dtype=np.float32)
         compressed_batch = model.compress(batch_array)
 
-        # Save compressed batch
-        batch_file = output_path / f"batch_{batch_count:05d}.npz"
-        np.savez_compressed(batch_file, compressed=compressed_batch)
+        # Compute distortion on this batch
+        batch_mse = compute_distortion(batch_array, compressed_batch, model)
+        total_mse_sum += batch_mse * len(batch_vectors)  # Weighted sum
+        total_vectors_for_mse += len(batch_vectors)
 
         total_compressed += len(batch_vectors)
         batch_count += 1
@@ -184,18 +182,24 @@ def streaming_sweep(
             break
 
     print(f"✓ Compressed {total_compressed:,} vectors in {batch_count} batches")
-    print(f"✓ Saved to: {output_path}")
 
-    # Step 4: Compute metrics on training set
-    print(f"\n[4/4] Computing metrics on training set...")
-    compressed_training = model.compress(training_vectors)
+    # Step 4: Finalize metrics
+    print(f"\n[4/4] Finalizing metrics...")
+
+    # Compute average MSE across all streamed vectors
+    final_mse = total_mse_sum / total_vectors_for_mse if total_vectors_for_mse > 0 else 0.0
+
+    # Compression ratio is the same regardless of dataset size
+    compression_ratio = model.get_compression_ratio(training_vectors)
 
     metrics = {
-        "compression_ratio": model.get_compression_ratio(training_vectors),
-        "mse": compute_distortion(training_vectors, compressed_training, model),
+        "compression_ratio": compression_ratio,
+        "mse": final_mse,
         "total_vectors_compressed": total_compressed,
         "num_batches": batch_count,
     }
+
+    print(f"  Computed MSE on {total_vectors_for_mse:,} vectors")
 
     # Log to database
     log_run(
@@ -210,9 +214,8 @@ def streaming_sweep(
     print("✓ Streaming compression complete!")
     print(f"  Sweep ID: {sweep_id}")
     print(f"  Compression ratio: {metrics['compression_ratio']:.1f}x")
-    print(f"  MSE (on training set): {metrics['mse']:.6f}")
-    print(f"  Total vectors compressed: {total_compressed:,}")
-    print(f"  Compressed batches saved to: {output_path}")
+    print(f"  MSE (on full dataset): {metrics['mse']:.6f}")
+    print(f"  Total vectors evaluated: {total_compressed:,}")
     print("=" * 70)
 
     return sweep_id
