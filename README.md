@@ -2,6 +2,8 @@
 
 Benchmark 5 vector quantization methods with full parameter sweep support. Clean, tested, production-ready.
 
+**📄 Project Documentation:** [Overleaf Handover Document](https://www.overleaf.com/project/693859b5d1024d6a2084a9ac) - Complete project background, literature review, and future directions.
+
 ---
 
 ## What This Does
@@ -67,13 +69,26 @@ sqlite> SELECT method, config, compression_ratio, mse, recall_at_10
 
 | Name | Vectors | Dims | Memory | Use Case |
 |------|---------|------|--------|----------|
+| `dbpedia-100k` | 100K | 1536 | ~1 GB | Quick testing & method validation |
+| `dbpedia-1536` | 1M | 1536 | ~6 GB | Production benchmarking |
+| `dbpedia-3072` | 1M | 3072 | ~12 GB | High-dimensional evaluation |
+| `cohere-msmarco` | 53M | 1024 | ~200 GB | Large-scale real-world passages |
 
-| Name | Vectors | Dims | Memory | Use Case |
-|------|---------|------|--------|----------|
-| `dbpedia-100k` | 100K | 1536 | ~1 GB | Quick testing |
-| `dbpedia-1536` | 1M | 1536 | ~6 GB | Production |
-| `dbpedia-3072` | 1M | 3072 | ~12 GB | High-dimensional |
-| `cohere-msmarco` | 53M | 1024 | ~200 GB | Full 53M: use `streaming-sweep` |
+### Why These Datasets?
+
+**DBpedia (Qdrant OpenAI Embeddings)**
+- **Source:** Wikipedia entity embeddings via OpenAI ada-002 model
+- **Real-world relevance:** Structured knowledge base with diverse semantic content
+- **Dimensionality variants:** 1536-dim and 3072-dim allow testing across different embedding sizes
+- **Use case:** Entity search, knowledge graph applications, semantic similarity tasks
+- **Why useful:** Clean, well-structured data ideal for controlled experiments and method comparison
+
+**Cohere MS MARCO v2.1**
+- **Source:** 53.2M web passage embeddings from Microsoft's MS MARCO collection
+- **Real-world relevance:** Production-scale document retrieval corpus
+- **Dimensionality:** 1024-dim (Cohere embed-english-v3 model)
+- **Use case:** Large-scale passage retrieval, RAG systems, production vector databases
+- **Why useful:** Tests quantization methods at scale with realistic retrieval workloads; captures real-world data distribution challenges
 
 **Common options:**
 - `--dataset-limit INT`: Limit vectors loaded (for regular `sweep` command)
@@ -81,7 +96,7 @@ sqlite> SELECT method, config, compression_ratio, mse, recall_at_10
 
 **MS MARCO Options:**
 1. **Subset testing**: Use `sweep` with `--dataset-limit 100000` (up to ~1M fits in memory)
-2. **Full 53M dataset**: Use `streaming-sweep` command (batch compression, no memory limit)
+2. **Full 53M dataset**: Use `streaming-sweep` command (evaluates on full dataset without memory constraints)
 
 ---
 
@@ -302,12 +317,17 @@ done
 vq-benchmark plot --dataset cohere-msmarco
 ```
 
-### MS MARCO FULL 53M dataset (streaming batch compression)
+### MS MARCO FULL 53M dataset (streaming evaluation)
+
+The `streaming-sweep` command evaluates quantization on the full 53M dataset without loading it all into memory. It trains on a subset (e.g., 1M vectors), then streams through the full dataset computing metrics on-the-fly.
 
 **Locally:**
 ```bash
-# Run streaming compression (trains on 1M, compresses all 53M in batches)
+# Run streaming evaluation (trains on 1M, evaluates on all 53M)
 vq-benchmark streaming-sweep --method pq --training-size 1000000 --batch-size 10000
+
+# Limit to first 100 batches (1M vectors) for testing
+vq-benchmark streaming-sweep --method pq --training-size 1000000 --max-batches 100
 
 # Try different methods
 vq-benchmark streaming-sweep --method opq --training-size 1000000
@@ -316,20 +336,21 @@ vq-benchmark streaming-sweep --method sq --training-size 500000
 
 **On PACE (recommended for full 53M):**
 ```bash
-# PQ on full 53M (~24 hours, 16GB RAM, 50GB NVMe for compressed batches)
-sbatch --mem=16G --time=24:00:00 --tmp=50G -C localNVMe \
+# PQ on full 53M (~18-24 hours, 12GB RAM, 10GB NVMe cache)
+sbatch --mem=12G --time=24:00:00 --tmp=10G -C localNVMe \
     --wrap="vq-benchmark streaming-sweep --method pq --training-size 1000000 --batch-size 10000"
 
-# OPQ on full 53M (slower training)
-sbatch --mem=20G --time=30:00:00 --tmp=50G -C localNVMe \
+# OPQ on full 53M (slower due to rotation matrix training)
+sbatch --mem=16G --time=30:00:00 --tmp=15G -C localNVMe \
     --wrap="vq-benchmark streaming-sweep --method opq --training-size 1000000 --batch-size 10000"
 ```
 
 **Streaming sweep options:**
 - `--training-size`: Vectors to train quantizer (default: 1M)
-- `--batch-size`: Batch size for compression (default: 10K)
-- `--max-batches`: Limit batches (default: None = all ~5300 batches)
-- `--output-dir`: Where to save compressed batches (default: `compressed_msmarco/`)
+- `--batch-size`: Batch size for streaming (default: 10K)
+- `--max-batches`: Limit batches for testing (default: None = all ~5300 batches)
+
+**Note:** Unlike the regular `sweep` command, `streaming-sweep` computes MSE across the entire streamed dataset, providing generalization metrics on data the quantizer hasn't seen during training.
 ```
 
 ### Deep PQ parameter sweep
@@ -482,10 +503,30 @@ vq-benchmark sweep --dataset dbpedia-1536 --dataset-limit 100000 --method pq  # 
 - 🎤 [Presentations](https://gtvault-my.sharepoint.com/:x:/g/personal/byu321_gatech_edu/EUB3IKLuDwdLkG5dlPwJoccByYUJ9XJgcngZMbOa8pwq0A)
 - 💬 Slack: `#vector-quantization`
 
-### Learning
-- 📝 [Project Doc](https://gtvault-my.sharepoint.com/:w:/r/personal/smussmann3_gatech_edu/_layouts/15/Doc.aspx?sourcedoc=%7B805CAAA2-48BB-42CD-A20D-C04F2DA3CA41%7D)
+### Learning & Documentation
+
+**Project Documentation:**
+- 📄 **[Overleaf Handover Document](https://www.overleaf.com/project/693859b5d1024d6a2084a9ac)** - Complete project overview including:
+  - Literature survey and comparison of quantization techniques
+  - Systems perspective on memory hierarchy and hardware optimization
+  - Vector quantization presentation materials
+  - Scope for improvement and future research directions
+- 📝 [Original Project Doc](https://gtvault-my.sharepoint.com/:w:/r/personal/smussmann3_gatech_edu/_layouts/15/Doc.aspx?sourcedoc=%7B805CAAA2-48BB-42CD-A20D-C04F2DA3CA41%7D)
+
+**Learning Resources:**
 - 📺 [VQ Intro](https://www.youtube.com/watch?v=c36lUUr864M)
 - 🔍 [FAISS PQ Chart](https://raw.githubusercontent.com/wiki/facebookresearch/faiss/PQ_variants_Faiss_annotated.png)
 - 📚 [Qdrant VQ](https://qdrant.tech/articles/what-is-vector-quantization/)
+
+### Future Research Directions
+
+From the project team's analysis, promising areas for improvement include:
+- **GPU-friendly SAQ variants** for faster quantization and queries
+- **Dynamic/incremental training** to avoid full re-quantization on dataset updates
+- **Information theory-based compression** for better rate-distortion tradeoffs
+- **Tail optimization** for better handling of outlier embeddings
+- **Dimensionality reduction** techniques that preserve relative distances (t-SNE, ISOMAP, LLE)
+
+See the [Overleaf document](https://www.overleaf.com/project/693859b5d1024d6a2084a9ac) for detailed analysis and references.
 
 ---

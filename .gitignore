@@ -213,3 +213,7 @@ __marimo__/
 build/
 dist/
 *.egg-info/
+
+# Backup files and old logs
+*.bak
+*.log
