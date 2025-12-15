@@ -45,6 +45,7 @@ PathLike = Union[str, Path]
 
 def write_fvecs(path: PathLike, vectors: np.ndarray) -> Path:
     """Write float vectors to a .fvecs file (FAISS binary format)."""
+    import os
     path = Path(path)
     vectors = np.asarray(vectors, dtype=np.float32)
     if vectors.ndim != 2:
@@ -55,11 +56,19 @@ def write_fvecs(path: PathLike, vectors: np.ndarray) -> Path:
         for vec in vectors:
             fh.write(dim_prefix.tobytes())
             fh.write(np.asarray(vec, dtype=np.float32).tobytes())
+
+    # Set file permissions for shared storage (PACE/ICE)
+    try:
+        os.chmod(path, 0o666)
+    except (OSError, PermissionError):
+        pass
+
     return path
 
 
 def write_ivecs(path: PathLike, vectors: np.ndarray) -> Path:
     """Write int vectors to a .ivecs file (FAISS binary format)."""
+    import os
     path = Path(path)
     vectors = np.asarray(vectors, dtype=np.int32)
     if vectors.ndim != 2:
@@ -70,6 +79,13 @@ def write_ivecs(path: PathLike, vectors: np.ndarray) -> Path:
         for vec in vectors:
             fh.write(dim_prefix.tobytes())
             fh.write(np.asarray(vec, dtype=np.int32).tobytes())
+
+    # Set file permissions for shared storage (PACE/ICE)
+    try:
+        os.chmod(path, 0o666)
+    except (OSError, PermissionError):
+        pass
+
     return path
 
 
@@ -295,8 +311,15 @@ def export_codebook(
     codes_filename: str = "codes.ivecs",
 ) -> dict[str, Union[Path, faiss.Index, np.ndarray]]:
     """Persist a quantizer's codebook (and optional codes) to FAISS vector files."""
+    import os
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    # Set directory permissions for shared storage (PACE/ICE)
+    try:
+        os.chmod(output_path, 0o777)
+    except (OSError, PermissionError):
+        pass  # May fail if not owner, that's ok
 
     codebook = _extract_codebook(model)
     codebook_path = write_fvecs(output_path / codebook_filename, codebook)

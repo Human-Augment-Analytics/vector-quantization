@@ -23,10 +23,16 @@ def log_run(method, dataset, metrics: dict, config: dict = None, sweep_id: str =
     if db_path is None:
         db_path = os.getenv("DB_PATH", "logs/benchmark_runs.db")
 
-    # Ensure parent directory exists
+    # Ensure parent directory exists with proper permissions for shared storage
     db_dir = os.path.dirname(db_path)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
+        try:
+            # Set directory permissions for shared storage (PACE/ICE)
+            os.chmod(db_dir, 0o777)
+        except (OSError, PermissionError):
+            # May fail if not owner, that's ok
+            pass
 
     try:
         git_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode().strip()
@@ -110,3 +116,10 @@ def log_run(method, dataset, metrics: dict, config: dict = None, sweep_id: str =
 
     conn.commit()
     conn.close()
+
+    # Set database file permissions for shared storage (PACE/ICE)
+    try:
+        os.chmod(db_path, 0o666)  # rw-rw-rw-
+    except (OSError, PermissionError):
+        # May fail if not owner, that's ok
+        pass
