@@ -294,6 +294,10 @@ def main(argv: list[str] | None = None) -> None:
             cfg = build_method_configs(
                 [method_name], D=D, bpd=bpd, K=args.K, nprobe=args.nprobe
             )
+            if method_name not in cfg:
+                raise RuntimeError(
+                    f"Could not instantiate method '{method_name}' — see warnings above."
+                )
             return cfg[method_name]
 
         print(f"\nSweeping bpd={bpd_values} for method '{method_name}' ...")

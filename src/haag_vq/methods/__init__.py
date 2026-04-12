@@ -3,5 +3,5 @@ from .search import FlatQuantizedIndex, IvfQuantizedIndex, FaissIvfPqIndex
 
 try:
     from .search import SaqIndex
-except (ImportError, NameError):
+except ImportError:
     pass

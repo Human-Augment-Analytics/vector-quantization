@@ -51,7 +51,7 @@ def compute_ground_truth(
 
 
 def _compute_recall(ids: np.ndarray, ground_truth: np.ndarray, k: int) -> float:
-    """Recall@k: fraction of queries that contain at least one true top-k neighbor.
+    """Recall@k: average fraction of true top-k neighbors found across queries.
 
     Args:
         ids:          (nq, k_returned) — returned neighbor IDs.
@@ -62,12 +62,13 @@ def _compute_recall(ids: np.ndarray, ground_truth: np.ndarray, k: int) -> float:
     k_gt = min(k, ground_truth.shape[1])
     k_ret = min(k, ids.shape[1])
     hits = 0
+    total = 0
     for i in range(nq):
         gt_set = set(ground_truth[i, :k_gt].tolist())
         ret_set = set(ids[i, :k_ret].tolist())
-        if gt_set & ret_set:
-            hits += 1
-    return hits / nq
+        hits += len(gt_set & ret_set)
+        total += k_gt
+    return hits / total if total > 0 else 0.0
 
 
 def benchmark_index(
@@ -103,17 +104,19 @@ def benchmark_index(
     # Fit
     index.fit(X_train)
 
-    # Search timing — use best-of-repeats to reduce noise
-    ids = None
+    # Search timing — use best-of-repeats to reduce noise; capture ids from
+    # the fastest run so recall is consistent with the reported QPS figure.
+    best_ids = None
     best_time = float('inf')
     for _ in range(repeats):
         t0 = time.perf_counter()
-        ids = index.search(X_query, k)
-        t1 = time.perf_counter()
-        elapsed = t1 - t0
+        cur_ids = index.search(X_query, k)
+        elapsed = time.perf_counter() - t0
         if elapsed < best_time:
             best_time = elapsed
+            best_ids = cur_ids
 
+    ids = best_ids
     qps = nq / best_time if best_time > 0 else float('inf')
 
     # Recall@k
