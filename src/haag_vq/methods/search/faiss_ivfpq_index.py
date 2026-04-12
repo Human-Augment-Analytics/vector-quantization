@@ -80,7 +80,7 @@ class FaissIvfPqIndex(BaseSearchIndex):
             return 0
         centroid_bytes = self._K * self._D * 4           # float32 coarse centroids
         code_bytes = self._N * self._m                    # 1 byte per subspace code (nbits<=8)
-        codebook_bytes = self._K * self._m * (1 << self._nbits) * 4  # PQ codebook float32
+        codebook_bytes = self._D * (1 << self._nbits) * 4  # PQ codebook: m * ksub * dsub * 4
         return centroid_bytes + code_bytes + codebook_bytes
 
     def reconstruction_mse(
@@ -97,3 +97,6 @@ class FaissIvfPqIndex(BaseSearchIndex):
 
     def load(self, path: str | Path) -> None:
         self._index = self._faiss.read_index(str(path))
+        self._index.nprobe = self._nprobe
+        self._N = self._index.ntotal
+        self._D = self._index.d

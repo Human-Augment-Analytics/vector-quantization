@@ -46,9 +46,15 @@ class FlatQuantizedIndex(BaseSearchIndex):
         self, Q: np.ndarray, k: int
     ) -> Tuple[np.ndarray, np.ndarray]:
         Q = np.ascontiguousarray(Q, dtype=np.float32)
-        X_hat = self._quantizer.decompress(self._codes).astype(np.float32)
         nq = Q.shape[0]
         k = min(k, self._N)
+
+        if k <= 0:
+            empty_ids = np.empty((nq, 0), dtype=np.uint32)
+            empty_dists = np.empty((nq, 0), dtype=np.float32)
+            return empty_ids, empty_dists
+
+        X_hat = self._quantizer.decompress(self._codes).astype(np.float32)
 
         if self._metric == 'l2':
             dists = cdist(Q, X_hat, metric='sqeuclidean').astype(np.float32)
@@ -93,7 +99,6 @@ class FlatQuantizedIndex(BaseSearchIndex):
         fall back to pickle. The index state (codes, metric, N, D) is always
         stored as a pickle sidecar alongside the quantizer artefact.
         """
-        import faiss
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -101,6 +106,7 @@ class FlatQuantizedIndex(BaseSearchIndex):
         # Serialise it by extracting the flat centroid array (a plain ndarray).
         from haag_vq.methods.product_quantization import ProductQuantizer as PQ
         if isinstance(self._quantizer, PQ) and self._quantizer.pq is not None:
+            import faiss
             flat_centroids = faiss.vector_to_array(self._quantizer.pq.centroids).copy()
             quantizer_state = {
                 'type': 'ProductQuantizer',

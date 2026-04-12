@@ -34,6 +34,7 @@ class IvfQuantizedIndex(BaseSearchIndex):
         self._K = K
         self._nprobe = nprobe
         self._centroids: Optional[np.ndarray] = None
+        self._centroid_index = None  # faiss flat index; built during fit() / load()
         self._cluster_quantizers: list[Optional[BaseQuantizer]] = []
         self._cluster_codes: list[np.ndarray] = []
         self._cluster_ids: list[np.ndarray] = []
@@ -47,7 +48,8 @@ class IvfQuantizedIndex(BaseSearchIndex):
         self._metric = metric
         self._N, self._D = X.shape
 
-        km = faiss.Kmeans(self._D, self._K, seed=0, verbose=False)
+        spherical = (metric == 'ip')
+        km = faiss.Kmeans(self._D, self._K, seed=0, verbose=False, spherical=spherical)
         km.train(X)
         self._centroids = km.centroids.copy()
 
@@ -73,12 +75,17 @@ class IvfQuantizedIndex(BaseSearchIndex):
             self._cluster_codes.append(q.compress(residuals))
             self._cluster_ids.append(vid)
 
+        # Build centroid index once here so _nearest_centroids doesn't rebuild it
+        # on every query call.
+        if self._metric == 'ip':
+            self._centroid_index = faiss.IndexFlatIP(self._D)
+        else:
+            self._centroid_index = faiss.IndexFlatL2(self._D)
+        self._centroid_index.add(self._centroids)
+
     def _nearest_centroids(self, Q: np.ndarray) -> np.ndarray:
         """Return (nq, nprobe) centroid indices sorted by distance."""
-        import faiss
-        index = faiss.IndexFlatL2(self._D)
-        index.add(self._centroids)
-        _, ids = index.search(Q, min(self._nprobe, self._K))
+        _, ids = self._centroid_index.search(Q, min(self._nprobe, self._K))
         return ids  # (nq, nprobe)
 
     def search(self, Q: np.ndarray, k: int) -> np.ndarray:
@@ -90,10 +97,22 @@ class IvfQuantizedIndex(BaseSearchIndex):
     ) -> Tuple[np.ndarray, np.ndarray]:
         Q = np.ascontiguousarray(Q, dtype=np.float32)
         nq = Q.shape[0]
+
+        if k <= 0:
+            empty_ids = np.empty((nq, 0), dtype=np.uint32)
+            empty_dists = np.empty((nq, 0), dtype=np.float32)
+            return empty_ids, empty_dists
+
         probe_ids = self._nearest_centroids(Q)  # (nq, nprobe)
 
-        all_ids = np.full((nq, k), -1, dtype=np.int64)
-        all_dists = np.full((nq, k), np.inf, dtype=np.float32)
+        id_sentinel = np.iinfo(np.uint32).max
+        if self._metric == 'ip':
+            dist_sentinel = -np.finfo(np.float32).max
+        else:
+            dist_sentinel = np.finfo(np.float32).max
+
+        all_ids = np.full((nq, k), id_sentinel, dtype=np.uint32)
+        all_dists = np.full((nq, k), dist_sentinel, dtype=np.float32)
 
         for qi in range(nq):
             candidates_id: list[np.ndarray] = []
@@ -124,7 +143,7 @@ class IvfQuantizedIndex(BaseSearchIndex):
             all_ids[qi, :topk_local] = vids[idx_sorted]
             all_dists[qi, :topk_local] = dists[idx_sorted]
 
-        return all_ids.astype(np.uint32), all_dists
+        return all_ids, all_dists
 
     def memory_footprint(self) -> int:
         centroid_bytes = self._centroids.nbytes if self._centroids is not None else 0
@@ -231,3 +250,10 @@ class IvfQuantizedIndex(BaseSearchIndex):
         self._metric = state['metric']
         self._N = state['N']
         self._D = state['D']
+
+        # Rebuild centroid index so _nearest_centroids works without fit().
+        if self._metric == 'ip':
+            self._centroid_index = faiss.IndexFlatIP(self._D)
+        else:
+            self._centroid_index = faiss.IndexFlatL2(self._D)
+        self._centroid_index.add(self._centroids)

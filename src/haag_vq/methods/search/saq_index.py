@@ -99,6 +99,8 @@ class SaqIndex(BaseSearchIndex):
     def load(self, path: str | Path) -> None:
         self._index = self._saq.IVF()
         self._index.load(str(path))
+        self._N = self._index.num_data
+        self._D = self._index.num_dim
 
     def reconstruction_mse(
         self,
