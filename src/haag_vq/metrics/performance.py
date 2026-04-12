@@ -7,8 +7,13 @@ import numpy as np
 
 from haag_vq.methods.base_quantizer import BaseQuantizer
 from haag_vq.methods.rabit_quantization import RaBitQuantizer
-from haag_vq.methods.saq import SAQ
 from haag_vq.utils.faiss_export import query_codebook
+
+try:
+    from haag_vq.methods.saq import SAQ as _SAQ  # type: ignore[import]
+    _SAQ_TYPES: tuple = (_SAQ,)
+except ImportError:
+    _SAQ_TYPES = ()
 
 
 def time_compress(model: BaseQuantizer, X: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -52,7 +57,7 @@ def measure_qps(
     timed_runs = max(1, repeats)
     durations: List[float] = []
     # Choose the runner: codebook search for most models, code assignment for RaBitQ
-    if isinstance(model, (RaBitQuantizer, SAQ)):
+    if isinstance(model, (RaBitQuantizer, *_SAQ_TYPES)):
         def _run_once():
             # Use compress as the closest analog to query-time work for RaBitQ
             model.compress(queries)

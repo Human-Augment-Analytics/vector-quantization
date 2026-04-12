@@ -22,7 +22,10 @@ from datetime import datetime
 from haag_vq.methods.product_quantization import ProductQuantizer
 from haag_vq.methods.scalar_quantization import ScalarQuantizer
 from haag_vq.methods.rabit_quantization import RaBitQuantizer
-from haag_vq.methods.saq import SAQ
+try:
+    from haag_vq.methods.saq import SAQ  # type: ignore[import]
+except ImportError:
+    SAQ = None  # type: ignore[assignment,misc]
 from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
 from haag_vq.metrics.distortion import compute_distortion
 from haag_vq.metrics.pairwise_distortion import compute_pairwise_distortion
