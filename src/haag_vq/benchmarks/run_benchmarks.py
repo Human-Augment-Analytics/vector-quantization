@@ -1,212 +1,337 @@
+# src/haag_vq/benchmarks/run_benchmarks.py
+"""Benchmark runner — dispatches all VQ methods through BaseSearchIndex."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
 from pathlib import Path
-from time import perf_counter
-import os
 
 import numpy as np
-import typer
 
-from haag_vq.methods.product_quantization import ProductQuantizer
-from haag_vq.methods.scalar_quantization import ScalarQuantizer
-from haag_vq.methods.optimized_product_quantization import OptimizedProductQuantizer
-from haag_vq.methods.rabit_quantization import RaBitQuantizer
-from haag_vq.methods.saq import SAQ
-from haag_vq.metrics.distortion import compute_distortion
-from haag_vq.utils.faiss_utils import MetricType
-from haag_vq.metrics.performance import measure_qps, time_compress, time_decompress
-from haag_vq.metrics.recall import evaluate_recall
-from haag_vq.data.datasets import Dataset, load_dummy_dataset
-from haag_vq.data import (
-    load_cohere_msmarco_passages,
-    load_dbpedia_openai_1536_100k,
-    load_dbpedia_openai_1536,
-    load_dbpedia_openai_3072,
+from haag_vq.benchmarks.search_bench import (
+    benchmark_index,
+    compare_methods,
+    compute_ground_truth,
+    pareto_plot,
+    sweep_bpd,
 )
-from haag_vq.utils.run_logger import log_run
 
 
-def run(
-    method: str = typer.Option("pq", help="Compression method: pq, opq, sq, saq, rabitq"),
-    dataset: str = typer.Option(..., help="Dataset name (REQUIRED): dummy, cohere-msmarco, dbpedia-100k, dbpedia-1536, dbpedia-3072"),
-    num_samples: int = typer.Option(10000, help="Number of samples to use (for dummy dataset)"),
-    dim: int = typer.Option(1024, help="Dimensionality (for dummy dataset)"),
-    dataset_limit: int = typer.Option(None, help="Limit number of vectors to load from dataset (None = load all available)"),
-    cache_dir: str = typer.Option("../datasets", help="Cache directory for Hugging Face datasets"),
-    # PQ parameters
-    M: int = typer.Option(8, help="[PQ/OPQ] Number of subquantizers (M)"),
-    B: int = typer.Option(8, help="[PQ/OPQ] Bits per subvector index (B)"),
-    # SAQ parameters
-    saq_num_bits: int = typer.Option(4, help="[SAQ] Default per-dimension bitwidth"),
-    saq_total_bits: int = typer.Option(None, help="[SAQ] Total bit budget per vector (overrides num_bits)"),
-    saq_allowed_bits: str = typer.Option("0,2,4,6,8", help="[SAQ] Allowed per-segment bitwidths"),
-    saq_segments: int = typer.Option(None, help="[SAQ] Number of segments (auto if None)"),
-    # RaBitQ parameters
-    rabitq_metric: str = typer.Option("L2", help="[RaBitQ] Distance metric: L2 or IP"),
-    # General parameters
-    with_recall: bool = typer.Option(False, help="Whether to compute Recall@k metrics"),
-    ground_truth_path: str = typer.Option(None, help="Path to precomputed ground truth (.npy file)"),
-    codebooks_dir: str = typer.Option(None, help="Directory to save codebooks (default: ./codebooks or $CODEBOOKS_DIR)"),
-    db_path: str = typer.Option(None, help="Path to SQLite database (default: logs/benchmark_runs.db or $DB_PATH)")
-):
-    # Determine codebooks directory (priority: CLI arg > env var > default)
-    if codebooks_dir is None:
-        codebooks_dir = os.getenv("CODEBOOKS_DIR")
-    if codebooks_dir is None:
-        codebooks_dir = Path(__file__).resolve().parents[3] / "codebooks"
-    else:
-        codebooks_dir = Path(codebooks_dir)
-    codebooks_dir.mkdir(parents=True, exist_ok=True)
+# ---------------------------------------------------------------------------
+# Dataset loading
+# ---------------------------------------------------------------------------
 
-    # Load precomputed ground truth if provided
-    precomputed_gt = None
-    if ground_truth_path:
-        print(f"Loading precomputed ground truth from: {ground_truth_path}")
-        precomputed_gt = np.load(ground_truth_path)
-        print(f"   Loaded ground truth shape: {precomputed_gt.shape}")
+def _load_fvecs(path: Path) -> np.ndarray:
+    """Load a .fvecs file into (N, D) float32 array."""
+    with open(path, 'rb') as f:
+        data = np.frombuffer(f.read(), dtype=np.float32)
+    d = int(data[0].view(np.int32))
+    return data.reshape(-1, d + 1)[:, 1:].copy()
 
-    print(f"Loading dataset: {dataset}...")
-    if dataset == "dummy":
-        # For dummy dataset, pass skip_ground_truth=True if no precomputed GT and large dataset
-        skip_gt = (precomputed_gt is None) and (num_samples > 100000)
-        data = load_dummy_dataset(num_samples=num_samples, dim=dim)
-        # Override ground truth if provided
-        if precomputed_gt is not None:
-            data.ground_truth = precomputed_gt
-    elif dataset == "cohere-msmarco":
-        print(f"Loading Cohere MS MARCO dataset (limit={dataset_limit})...")
-        data = load_cohere_msmarco_passages(
-            limit=dataset_limit or 100_000,
-            cache_dir=cache_dir,
-            streaming=True,
-        )
-        if precomputed_gt is not None:
-            data.ground_truth = precomputed_gt
-    elif dataset == "dbpedia-100k":
-        print(f"Loading DBpedia 100K dataset (1536-dim)...")
-        data = load_dbpedia_openai_1536_100k(
-            limit=dataset_limit,
-            cache_dir=cache_dir,
-        )
-        if precomputed_gt is not None:
-            data.ground_truth = precomputed_gt
-    elif dataset == "dbpedia-1536":
-        print(f"Loading DBpedia 1M dataset (1536-dim, limit={dataset_limit})...")
-        data = load_dbpedia_openai_1536(
-            limit=dataset_limit or 100_000,
-            cache_dir=cache_dir,
-        )
-        if precomputed_gt is not None:
-            data.ground_truth = precomputed_gt
-    elif dataset == "dbpedia-3072":
-        print(f"Loading DBpedia 1M dataset (3072-dim, limit={dataset_limit})...")
-        data = load_dbpedia_openai_3072(
-            limit=dataset_limit or 100_000,
-            cache_dir=cache_dir,
-        )
-        if precomputed_gt is not None:
-            data.ground_truth = precomputed_gt
-    else:
-        raise ValueError(
-            f"Unsupported dataset: {dataset}. "
-            f"Supported: dummy, cohere-msmarco, dbpedia-100k, dbpedia-1536, dbpedia-3072"
-        )
 
-    # Create model based on method
-    if method == "pq":
-        print(f"Fitting PQ (M={M}, B={B})...")
-        model = ProductQuantizer(M=M, B=B)
-    elif method == "opq":
-        print(f"Fitting OPQ (M={M}, B={B})...")
-        model = OptimizedProductQuantizer(M=M, B=B)
-    elif method == "sq":
-        print("Fitting SQ...")
-        model = ScalarQuantizer()
-    elif method == "saq":
-        # Parse allowed_bits
-        allowed_bits_list = [int(x.strip()) for x in saq_allowed_bits.split(",")]
-        if saq_total_bits is not None:
-            print(f"Fitting SAQ (total_bits={saq_total_bits}, allowed_bits={allowed_bits_list})...")
-            model = SAQ(
-                total_bits=saq_total_bits,
-                allowed_bits=allowed_bits_list,
-                n_segments=saq_segments,
-            )
-        else:
-            print(f"Fitting SAQ (num_bits={saq_num_bits})...")
-            model = SAQ(
-                num_bits=saq_num_bits,
-                allowed_bits=allowed_bits_list,
-                n_segments=saq_segments,
-            )
-    elif method == "rabitq":
-        metric_type = MetricType.L2 if rabitq_metric.upper() == "L2" else MetricType.INNER_PRODUCT
-        print(f"Fitting RaBitQ (metric={rabitq_metric})...")
-        model = RaBitQuantizer(metric_type=metric_type)
-    else:
-        raise ValueError(f"Unsupported method: {method}. Supported: pq, opq, sq, saq, rabitq")
+def _load_ivecs(path: Path) -> np.ndarray:
+    """Load a .ivecs file into (N, k) int32 array."""
+    with open(path, 'rb') as f:
+        data = np.frombuffer(f.read(), dtype=np.int32)
+    d = int(data[0])
+    return data.reshape(-1, d + 1)[:, 1:].copy()
 
-    X = data.vectors
-    fit_start = perf_counter()
-    model.fit(X)
-    fit_time = perf_counter() - fit_start
 
-    X_compressed, compression_time = time_compress(model, X)
-    X_reconstructed, decompression_time = time_decompress(model, X_compressed)
+def load_dataset(dataset_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Load X_train, X_query, and optionally ground truth from dataset_path.
 
-    distortion = compute_distortion(
-        X,
-        X_compressed,
-        model
+    Accepts:
+    - A directory containing train.npy / queries.npy / [groundtruth.npy]
+    - A directory containing base.fvecs / query.fvecs / [groundtruth.ivecs]
+    - The string 'synthetic' to generate a small synthetic dataset.
+
+    Returns:
+        (X_train, X_query, gt_ids) — gt_ids is None when not found on disk.
+    """
+    if dataset_path == 'synthetic':
+        rng = np.random.default_rng(0)
+        X_train = rng.standard_normal((2000, 64)).astype(np.float32)
+        X_query = rng.standard_normal((100, 64)).astype(np.float32)
+        return X_train, X_query, None
+
+    p = Path(dataset_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Dataset path not found: {p}")
+
+    # .npy format
+    if (p / 'train.npy').exists():
+        X_train = np.load(p / 'train.npy').astype(np.float32)
+        X_query = np.load(p / 'queries.npy').astype(np.float32)
+        gt: np.ndarray | None = None
+        if (p / 'groundtruth.npy').exists():
+            gt = np.load(p / 'groundtruth.npy').astype(np.int64)
+        return X_train, X_query, gt
+
+    # .fvecs format
+    if (p / 'base.fvecs').exists():
+        X_train = _load_fvecs(p / 'base.fvecs')
+        X_query = _load_fvecs(p / 'query.fvecs')
+        gt = None
+        if (p / 'groundtruth.ivecs').exists():
+            gt = _load_ivecs(p / 'groundtruth.ivecs').astype(np.int64)
+        return X_train, X_query, gt
+
+    raise ValueError(
+        f"Could not detect dataset format in {p}. "
+        "Expected train.npy+queries.npy or base.fvecs+query.fvecs."
     )
-    compression = model.get_compression_ratio(X)
-    quantization_time = fit_time + compression_time
 
-    try:
-        export_result = model.save_codebooks(
-            codes=X_compressed,
-            output_dir=codebooks_dir,
-            codebook_filename=f"{method}_{dataset}_codebook.fvecs",
-            codes_filename=f"{method}_{dataset}_codes.ivecs",
+
+# ---------------------------------------------------------------------------
+# Method construction
+# ---------------------------------------------------------------------------
+
+AVAILABLE_METHODS = ('pq_flat', 'sq_flat', 'pq_ivf', 'faiss_ivfpq', 'saq')
+
+
+def build_method_configs(
+    method_names: list[str],
+    D: int,
+    bpd: float,
+    K: int = 1024,
+    nprobe: int = 64,
+) -> dict[str, object]:
+    """Instantiate BaseSearchIndex objects for the requested methods.
+
+    Args:
+        method_names: Subset of AVAILABLE_METHODS.
+        D:            Vector dimensionality (needed to derive PQ sub-spaces).
+        bpd:          Target bits per dimension (used to parameterise PQ/SQ).
+        K:            Number of IVF centroids.
+        nprobe:       IVF nprobe at search time.
+
+    Returns:
+        Dict of method_name -> unfitted BaseSearchIndex.
+    """
+    configs: dict[str, object] = {}
+
+    for name in method_names:
+        if name == 'pq_flat':
+            try:
+                from haag_vq.methods.product_quantization import ProductQuantizer
+                from haag_vq.methods.search import FlatQuantizedIndex
+                # M = total_bits / bits_per_subcode; clamp to valid range
+                nbits_per_sub = 8
+                total_bits = int(bpd * D)
+                M = max(1, total_bits // nbits_per_sub)
+                M = min(M, D)  # M <= D
+                configs['pq_flat'] = FlatQuantizedIndex(
+                    ProductQuantizer(M=M, B=nbits_per_sub)
+                )
+            except ImportError as e:
+                print(f"WARNING: pq_flat unavailable ({e})", file=sys.stderr)
+
+        elif name == 'sq_flat':
+            try:
+                from haag_vq.methods.scalar_quantization import ScalarQuantizer
+                from haag_vq.methods.search import FlatQuantizedIndex
+                # Map bpd to nearest supported bit depth (4, 8, 16)
+                if bpd <= 4.5:
+                    nb = 4
+                elif bpd <= 12:
+                    nb = 8
+                else:
+                    nb = 16
+                configs['sq_flat'] = FlatQuantizedIndex(ScalarQuantizer(num_bits=nb))
+            except ImportError as e:
+                print(f"WARNING: sq_flat unavailable ({e})", file=sys.stderr)
+
+        elif name == 'pq_ivf':
+            try:
+                from haag_vq.methods.product_quantization import ProductQuantizer
+                from haag_vq.methods.search import IvfQuantizedIndex
+                nbits_per_sub = 8
+                total_bits = int(bpd * D)
+                M = max(1, total_bits // nbits_per_sub)
+                M = min(M, D)
+                configs['pq_ivf'] = IvfQuantizedIndex(
+                    quantizer_factory=lambda M=M: ProductQuantizer(M=M, B=8),
+                    K=K,
+                    nprobe=nprobe,
+                )
+            except ImportError as e:
+                print(f"WARNING: pq_ivf unavailable ({e})", file=sys.stderr)
+
+        elif name == 'faiss_ivfpq':
+            try:
+                from haag_vq.methods.search import FaissIvfPqIndex
+                nbits_per_sub = 8
+                total_bits = int(bpd * D)
+                m = max(1, total_bits // nbits_per_sub)
+                m = min(m, D)
+                configs['faiss_ivfpq'] = FaissIvfPqIndex(
+                    K=K, m=m, nbits=nbits_per_sub, nprobe=nprobe
+                )
+            except ImportError as e:
+                print(f"WARNING: faiss_ivfpq unavailable ({e})", file=sys.stderr)
+
+        elif name == 'saq':
+            try:
+                from haag_vq.methods.search import SaqIndex  # type: ignore[attr-defined]
+                configs['saq'] = SaqIndex(bpd=bpd, K=K, nprobe=nprobe)
+            except (ImportError, AttributeError) as e:
+                print(f"WARNING: saq unavailable ({e})", file=sys.stderr)
+
+        else:
+            print(f"WARNING: unknown method '{name}' — skipped", file=sys.stderr)
+
+    return configs
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description='VQ benchmark harness — compares BaseSearchIndex methods.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        '--dataset',
+        default='synthetic',
+        help=(
+            "Path to dataset directory (expects train.npy+queries.npy or "
+            "base.fvecs+query.fvecs), or 'synthetic' for a small generated dataset."
+        ),
+    )
+    parser.add_argument(
+        '--methods',
+        default=','.join(('pq_flat', 'sq_flat', 'pq_ivf', 'faiss_ivfpq')),
+        help='Comma-separated list of methods to benchmark.',
+    )
+    parser.add_argument(
+        '--bpd',
+        type=float,
+        default=8.0,
+        help='Bits per dimension (used to parameterise method compression level).',
+    )
+    parser.add_argument(
+        '--sweep-bpd',
+        dest='sweep_bpd_values',
+        type=str,
+        default=None,
+        help=(
+            'Comma-separated bpd values for a sweep (e.g. "2,4,8,16"). '
+            'When set, a single method must be given via --methods and '
+            '--bpd is ignored.'
+        ),
+    )
+    parser.add_argument(
+        '--k',
+        type=int,
+        default=10,
+        help='Number of neighbors for recall and search.',
+    )
+    parser.add_argument(
+        '--output',
+        default=None,
+        help='Path to save results CSV. Omit to skip saving.',
+    )
+    parser.add_argument(
+        '--plot',
+        action='store_true',
+        help='Show (or save) Pareto plot after benchmarking.',
+    )
+    parser.add_argument(
+        '--plot-save',
+        default=None,
+        help='File path to save the Pareto plot image (implies --plot).',
+    )
+    parser.add_argument(
+        '--K',
+        type=int,
+        default=1024,
+        help='Number of IVF centroids for IVF-based methods.',
+    )
+    parser.add_argument(
+        '--nprobe',
+        type=int,
+        default=64,
+        help='Number of IVF cells probed at search time.',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    # Load data
+    print(f"Loading dataset: {args.dataset!r} ...")
+    X_train, X_query, gt = load_dataset(args.dataset)
+    N, D = X_train.shape
+    print(f"  X_train={X_train.shape}  X_query={X_query.shape}")
+
+    # Ground truth
+    if gt is None:
+        print(f"  Computing brute-force ground truth (k={args.k}) ...")
+        gt = compute_ground_truth(X_train, X_query, k=args.k)
+    else:
+        print(f"  Ground truth loaded: {gt.shape}")
+
+    method_names = [m.strip() for m in args.methods.split(',') if m.strip()]
+
+    # Sweep mode
+    if args.sweep_bpd_values is not None:
+        if len(method_names) != 1:
+            print(
+                "ERROR: --sweep-bpd requires exactly one method via --methods.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        bpd_values = [float(v) for v in args.sweep_bpd_values.split(',')]
+        method_name = method_names[0]
+
+        def _factory(bpd: float):
+            cfg = build_method_configs(
+                [method_name], D=D, bpd=bpd, K=args.K, nprobe=args.nprobe
+            )
+            if method_name not in cfg:
+                raise RuntimeError(
+                    f"Could not instantiate method '{method_name}' — see warnings above."
+                )
+            return cfg[method_name]
+
+        print(f"\nSweeping bpd={bpd_values} for method '{method_name}' ...")
+        df = sweep_bpd(_factory, bpd_values, X_train, X_query, gt, k=args.k)
+
+    else:
+        # Compare mode
+        configs = build_method_configs(
+            method_names, D=D, bpd=args.bpd, K=args.K, nprobe=args.nprobe
         )
-        print(f"Saved codebook to: {export_result['codebook']}")
-        if "codes" in export_result:
-            print(f"Saved codes to   : {export_result['codes']}")
-        codebook_vectors = export_result.get("codebook_vectors")
-    except RuntimeError as exc:
-        print(f"Warning: FAISS export skipped ({exc})")
-        codebook_vectors = None
-    except Exception as exc:
-        print(f"Warning: Failed to export codebook ({exc})")
-        codebook_vectors = None
+        if not configs:
+            print("ERROR: no methods could be instantiated.", file=sys.stderr)
+            sys.exit(1)
 
-    metrics = {
-        "distortion": distortion,
-        "compression": compression,
-        "fit_latency_ms": fit_time * 1000.0,
-        "compression_latency_ms": compression_time * 1000.0,
-        "decompression_latency_ms": decompression_time * 1000.0,
-        "quantization_latency_ms": quantization_time * 1000.0,
-    }
+        print(f"\nBenchmarking: {list(configs.keys())} (k={args.k}, bpd={args.bpd})")
+        df = compare_methods(configs, X_train, X_query, gt, k=args.k)
 
-    qps_metrics = None
-    # Always attempt QPS measurement. For RaBitQ, measure_qps falls back to
-    # timing model.compress and does not require a codebook.
-    try:
-        qps_metrics = measure_qps(
-            data.queries,
-            model=model,
-            codebook_vectors=codebook_vectors,
-        )
-        metrics.update(qps_metrics)
-    except Exception as exc:
-        print(f"Warning: Failed to measure QPS ({exc})")
+    # Print results
+    print("\n--- Results ---")
+    display_cols = [c for c in ('method', 'bpd', 'recall_at_k', 'qps', 'memory_bytes', 'compression_ratio', 'mse') if c in df.columns]
+    print(df[display_cols].to_string(index=False))
 
-    if with_recall:
-        recall_metrics = evaluate_recall(data, model)
-        metrics.update(recall_metrics)
+    # Save CSV
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out, index=False)
+        print(f"\nSaved results to {out}")
 
-    log_run(method=method, dataset=dataset, metrics=metrics, db_path=db_path)
+    # Pareto plot
+    if args.plot or args.plot_save:
+        save = args.plot_save  # may be None → plt.show()
+        pareto_plot(df, save_path=save)
 
-    print("\nResults:")
-    max_key_len = max(len(k) for k in metrics)
-    for k, v in metrics.items():
-        print(f"  {k.ljust(max_key_len)} : {v:.4f}" if isinstance(v, float) else f"  {k.ljust(max_key_len)} : {v}")
+
+if __name__ == '__main__':
+    main()
