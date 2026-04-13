@@ -46,20 +46,12 @@ def test_memory_footprint_positive(saq_index):
     assert saq_index.memory_footprint() > 0
 
 
-def test_reconstruction_mse_finite(saq_index):
+def test_reconstruction_mse_returns_none(saq_index):
+    """SaqIndex uses construct() path which doesn't support decompress()."""
     X = make_data()
     saq_index.fit(X)
     mse = saq_index.reconstruction_mse(X)
-    assert mse is not None
-    assert np.isfinite(mse) and mse >= 0.0
-
-
-def test_reconstruction_mse_with_sample_ids(saq_index):
-    X = make_data()
-    saq_index.fit(X)
-    sample_ids = np.array([0, 1, 2, 3, 4], dtype=np.uint32)
-    mse = saq_index.reconstruction_mse(X, sample_ids=sample_ids)
-    assert mse is not None and np.isfinite(mse)
+    assert mse is None
 
 
 def test_save_load_roundtrip(saq_index, tmp_path):

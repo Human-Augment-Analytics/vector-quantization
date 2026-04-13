@@ -11,12 +11,23 @@ import numpy as np
 from haag_vq.methods.base_search_index import BaseSearchIndex
 
 
+def _faiss_kmeans(X: np.ndarray, K: int, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """Run k-means via faiss-cpu. Returns (centroids, assignments)."""
+    import faiss
+    D = X.shape[1]
+    kmeans = faiss.Kmeans(D, K, niter=20, seed=seed, verbose=False)
+    kmeans.train(X)
+    _, assignments = kmeans.index.search(X, 1)
+    centroids = kmeans.centroids.copy()
+    assignments = assignments.ravel().astype(np.uint32)
+    return centroids, assignments
+
+
 class SaqIndex(BaseSearchIndex):
     """Wraps the SAQ C++ IVF index as a BaseSearchIndex.
 
-    Capability detection: imports saq at construction time and checks for
-    GpuIVF. Variant selection happens at wheel install time — install
-    saq-cpu, saq-gpu, saq-codebook, or saq-gpu-codebook.
+    Preprocessing (k-means clustering) is done in Python via faiss-cpu.
+    Quantization and search use the SAQ C++ engine (saq wheel).
 
     Raises ImportError at construction time if saq is not installed.
     """
@@ -64,11 +75,24 @@ class SaqIndex(BaseSearchIndex):
         self._metric = metric
         self._N, self._D = X.shape
         cfg = self._make_config(metric)
+
+        # K-means clustering via faiss-cpu
+        K = min(self._K, self._N // 10)  # avoid too many clusters for small data
+        centroids, assignments = _faiss_kmeans(X, K, seed=0)
+        centroids = np.ascontiguousarray(centroids, dtype=np.float32)
+
+        # Compute per-dimension variance and set on index
+        variance = X.var(axis=0).astype(np.float32)
+
         IndexClass = self._saq.GpuIVF if self._use_gpu else self._saq.IVF
-        self._index = IndexClass(self._N, self._D, self._K, cfg)
-        self._index.fit(
-            X, apply_pca=True, K=self._K, seed=0, num_threads=self._num_threads
-        )
+        self._index = IndexClass(self._N, self._D, K, cfg)
+        self._index.set_variance(variance)
+
+        # Build IVF index from pre-computed clustering
+        if self._use_gpu:
+            self._index.construct(X, centroids, assignments)
+        else:
+            self._index.construct(X, centroids, assignments, self._num_threads)
 
     def search(self, Q: np.ndarray, k: int) -> np.ndarray:
         ids, _ = self.search_with_scores(Q, k)
@@ -107,11 +131,7 @@ class SaqIndex(BaseSearchIndex):
         X: np.ndarray,
         sample_ids: Optional[np.ndarray] = None,
     ) -> Optional[float]:
-        if self._index is None:
-            return None
-        X = np.ascontiguousarray(X, dtype=np.float32)
-        if sample_ids is None:
-            sample_ids = np.arange(len(X), dtype=np.uint32)
-        sample_ids = np.ascontiguousarray(sample_ids, dtype=np.uint32)
-        X_hat = self._index.decompress(sample_ids)
-        return float(np.mean((X[sample_ids] - X_hat) ** 2))
+        # decompress() requires fit() (not construct()), which caches raw codes.
+        # Since we use construct() with Python-side preprocessing, decompress
+        # is not available.
+        return None
