@@ -8,12 +8,18 @@ Secondary metric: reconstruction MSE
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
 
 from haag_vq.methods.base_search_index import BaseSearchIndex
+
+
+def _utc_timestamp() -> str:
+    """Return the current UTC time as an ISO-8601 string (second precision)."""
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def compute_ground_truth(
@@ -173,10 +179,12 @@ def sweep_bpd(
         DataFrame with one row per bpd value.
     """
     rows = []
+    ts = _utc_timestamp()
     for bpd in bpd_values:
         index = index_factory(bpd)
         result = benchmark_index(index, X_train, X_query, gt_ids, k=k)
         result['bpd'] = bpd
+        result['timestamp'] = ts
         rows.append(result)
     return pd.DataFrame(rows)
 
@@ -201,9 +209,11 @@ def compare_methods(
         DataFrame with one row per method.
     """
     rows = []
+    ts = _utc_timestamp()
     for name, index in method_configs.items():
         result = benchmark_index(index, X_train, X_query, gt_ids, k=k)
         result['method'] = name
+        result['timestamp'] = ts
         rows.append(result)
     return pd.DataFrame(rows)
 

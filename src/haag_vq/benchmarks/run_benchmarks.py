@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -88,7 +89,21 @@ def load_dataset(dataset_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray 
 # Method construction
 # ---------------------------------------------------------------------------
 
-AVAILABLE_METHODS = ('pq_flat', 'sq_flat', 'pq_ivf', 'faiss_ivfpq', 'saq')
+AVAILABLE_METHODS = ('pq_flat', 'sq_flat', 'pq_ivf', 'faiss_ivfpq', 'saq', 'rabitq')
+
+
+def timestamped_output_path(path: Path, now: datetime | None = None) -> Path:
+    """Insert ``_YYYYMMDD_HHMMSS`` before the suffix of an output path.
+
+    Each benchmark invocation produces its own file — this prevents accidental
+    overwrites when re-running the same command and makes run history visible
+    from ``ls``. UTC is used for consistency with the per-row ``timestamp``
+    column written into the CSV itself.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    stamp = now.strftime('%Y%m%d_%H%M%S')
+    return path.with_name(f"{path.stem}_{stamp}{path.suffix}")
 
 
 def build_method_configs(
@@ -178,6 +193,15 @@ def build_method_configs(
                 configs['saq'] = SaqIndex(bpd=bpd, K=K, nprobe=nprobe)
             except (ImportError, AttributeError) as e:
                 print(f"WARNING: saq unavailable ({e})", file=sys.stderr)
+
+        elif name == 'rabitq':
+            # RaBitQ encodes at ~1 bit per dimension by construction — the
+            # ``bpd`` arg is not a tunable knob for this method and is ignored.
+            try:
+                from haag_vq.methods.search import RaBitQIndex
+                configs['rabitq'] = RaBitQIndex()
+            except ImportError as e:
+                print(f"WARNING: rabitq unavailable ({e})", file=sys.stderr)
 
         else:
             print(f"WARNING: unknown method '{name}' — skipped", file=sys.stderr)
@@ -320,9 +344,9 @@ def main(argv: list[str] | None = None) -> None:
     display_cols = [c for c in ('method', 'bpd', 'recall_at_k', 'qps', 'memory_bytes', 'compression_ratio', 'mse') if c in df.columns]
     print(df[display_cols].to_string(index=False))
 
-    # Save CSV
+    # Save CSV — filename is always timestamped so re-runs don't clobber.
     if args.output:
-        out = Path(args.output)
+        out = timestamped_output_path(Path(args.output))
         out.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out, index=False)
         print(f"\nSaved results to {out}")

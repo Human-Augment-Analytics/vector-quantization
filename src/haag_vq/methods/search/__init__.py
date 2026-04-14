@@ -2,8 +2,14 @@
 from .flat_quantized_index import FlatQuantizedIndex
 from .ivf_quantized_index import IvfQuantizedIndex
 from .faiss_ivfpq_index import FaissIvfPqIndex
+from .rabitq_index import RaBitQIndex
 
-__all__ = ["FlatQuantizedIndex", "IvfQuantizedIndex", "FaissIvfPqIndex"]
+__all__ = [
+    "FlatQuantizedIndex",
+    "IvfQuantizedIndex",
+    "FaissIvfPqIndex",
+    "RaBitQIndex",
+]
 
 try:
     from .saq_index import SaqIndex
