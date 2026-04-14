@@ -89,7 +89,16 @@ def load_dataset(dataset_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray 
 # Method construction
 # ---------------------------------------------------------------------------
 
-AVAILABLE_METHODS = ('pq_flat', 'sq_flat', 'pq_ivf', 'faiss_ivfpq', 'saq', 'rabitq')
+AVAILABLE_METHODS = (
+    'pq_flat',
+    'opq_flat',
+    'sq_flat',
+    'pq_ivf',
+    'faiss_ivfpq',
+    'saq',
+    'rabitq',
+    'rabitq_ivf',
+)
 
 
 def timestamped_output_path(path: Path, now: datetime | None = None) -> Path:
@@ -202,6 +211,34 @@ def build_method_configs(
                 configs['rabitq'] = RaBitQIndex()
             except ImportError as e:
                 print(f"WARNING: rabitq unavailable ({e})", file=sys.stderr)
+
+        elif name == 'rabitq_ivf':
+            # IVF coarse cells with RaBitQ-encoded residuals. ``bpd`` ignored
+            # for the same reason as ``rabitq``.
+            try:
+                from haag_vq.methods.search import RaBitQIVFIndex
+                configs['rabitq_ivf'] = RaBitQIVFIndex(nlist=K, nprobe=nprobe)
+            except ImportError as e:
+                print(f"WARNING: rabitq_ivf unavailable ({e})", file=sys.stderr)
+
+        elif name == 'opq_flat':
+            try:
+                from haag_vq.methods.optimized_product_quantization import (
+                    OptimizedProductQuantizer,
+                )
+                from haag_vq.methods.search import FlatQuantizedIndex
+                nbits_per_sub = 8
+                total_bits = int(bpd * D)
+                M = max(1, total_bits // nbits_per_sub)
+                M = min(M, D)
+                # OPQ requires D divisible by M — walk down until satisfied.
+                while M > 1 and D % M != 0:
+                    M -= 1
+                configs['opq_flat'] = FlatQuantizedIndex(
+                    OptimizedProductQuantizer(M=M, B=nbits_per_sub)
+                )
+            except ImportError as e:
+                print(f"WARNING: opq_flat unavailable ({e})", file=sys.stderr)
 
         else:
             print(f"WARNING: unknown method '{name}' — skipped", file=sys.stderr)

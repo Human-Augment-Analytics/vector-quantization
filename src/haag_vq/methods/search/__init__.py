@@ -3,12 +3,14 @@ from .flat_quantized_index import FlatQuantizedIndex
 from .ivf_quantized_index import IvfQuantizedIndex
 from .faiss_ivfpq_index import FaissIvfPqIndex
 from .rabitq_index import RaBitQIndex
+from .rabitq_ivf_index import RaBitQIVFIndex
 
 __all__ = [
     "FlatQuantizedIndex",
     "IvfQuantizedIndex",
     "FaissIvfPqIndex",
     "RaBitQIndex",
+    "RaBitQIVFIndex",
 ]
 
 try:

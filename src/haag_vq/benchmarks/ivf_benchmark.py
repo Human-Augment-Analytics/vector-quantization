@@ -205,29 +205,90 @@ def _run_faiss_ivfpq(train, queries, gt, k, bpd, K, nprobe):
 
 
 def _run_rabitq(train, queries, gt, k, bpd):
-    """RaBitQ with brute-force search on reconstructed vectors.
+    """Flat RaBitQ via native estimator (``RaBitQIndex``).
 
     Note: ``bpd`` is ignored. RaBitQ encodes each normalised vector at ~1 bit
     per dimension by construction — the value is accepted only so that the
     method-runner signature matches the others in ``METHOD_RUNNERS``.
     """
-    from haag_vq.methods.rabit_quantization import RaBitQuantizer
-    from haag_vq.utils.faiss_utils import MetricType
+    from haag_vq.methods.search import RaBitQIndex
 
-    D = train.shape[1]
-    model = RaBitQuantizer(metric_type=MetricType.L2)
+    model = RaBitQIndex()
 
     t0 = perf_counter()
     model.fit(train)
     fit_time = perf_counter() - t0
     print(f"  rabitq: fit in {fit_time:.1f}s")
 
+    t0 = perf_counter()
+    I = model.search(queries, k)
+    search_time = perf_counter() - t0
+
+    recall = _recall_at_k(gt, I, k)
+    qps = len(queries) / max(search_time, 1e-12)
+    mem = int(model.memory_footprint())
+    comp = train.nbytes / max(mem, 1)
+
+    mse = model.reconstruction_mse(train, sample_ids=np.arange(min(1000, len(train))))
+
+    return {
+        "recall_at_k": recall,
+        "qps": qps,
+        "memory_bytes": mem,
+        "compression_ratio": comp,
+        "mse": mse if mse is not None else "",
+    }
+
+
+def _run_rabitq_ivf(train, queries, gt, k, bpd, K, nprobe):
+    """IVF+RaBitQ via ``RaBitQIVFIndex``. ``bpd`` ignored (RaBitQ = 1 bpd)."""
+    from haag_vq.methods.search import RaBitQIVFIndex
+
+    model = RaBitQIVFIndex(nlist=K, nprobe=nprobe)
+
+    t0 = perf_counter()
+    model.fit(train)
+    fit_time = perf_counter() - t0
+    print(f"  rabitq_ivf: fit in {fit_time:.1f}s")
+
+    t0 = perf_counter()
+    I = model.search(queries, k)
+    search_time = perf_counter() - t0
+
+    recall = _recall_at_k(gt, I, k)
+    qps = len(queries) / max(search_time, 1e-12)
+    mem = int(model.memory_footprint())
+    comp = train.nbytes / max(mem, 1)
+
+    return {
+        "recall_at_k": recall,
+        "qps": qps,
+        "memory_bytes": mem,
+        "compression_ratio": comp,
+        "mse": "",
+    }
+
+
+def _run_opq_flat(train, queries, gt, k, bpd):
+    """OPQ (rotation + PQ) with brute-force search on reconstructed vectors."""
+    from haag_vq.methods.optimized_product_quantization import (
+        OptimizedProductQuantizer,
+    )
+
+    D = train.shape[1]
+    M = _bpd_to_pq_M(D, bpd)
+    model = OptimizedProductQuantizer(M=M, B=8)
+
+    t0 = perf_counter()
+    model.fit(train)
+    fit_time = perf_counter() - t0
+    print(f"  opq_flat: fit in {fit_time:.1f}s")
+
     codes = model.compress(train)
     reconstructed = model.decompress(codes).astype(np.float32)
 
     mse = float(np.mean(np.sum((train - reconstructed) ** 2, axis=1)))
 
-    # Flat search on reconstructed vectors — matches pq_flat / sq_flat shape.
     index = faiss.IndexFlatL2(D)
     index.add(reconstructed)
 
@@ -289,10 +350,12 @@ def _run_saq(train, queries, gt, k, bpd, K, nprobe):
 
 METHOD_RUNNERS = {
     "pq_flat": lambda t, q, gt, k, bpd, K, np_: _run_pq_flat(t, q, gt, k, bpd),
+    "opq_flat": lambda t, q, gt, k, bpd, K, np_: _run_opq_flat(t, q, gt, k, bpd),
     "sq_flat": lambda t, q, gt, k, bpd, K, np_: _run_sq_flat(t, q, gt, k, bpd),
     "faiss_ivfpq": _run_faiss_ivfpq,
     "saq": _run_saq,
     "rabitq": lambda t, q, gt, k, bpd, K, np_: _run_rabitq(t, q, gt, k, bpd),
+    "rabitq_ivf": _run_rabitq_ivf,
 }
 
 

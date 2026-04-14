@@ -70,15 +70,31 @@ def test_memory_footprint_before_fit():
     assert idx.memory_footprint() == 0
 
 
-def test_save_load_not_implemented(tmp_path, rabitq_index):
-    # RaBitQIndex persistence is deliberately not supported — faiss.RaBitQuantizer
-    # is a SWIG object and cannot be pickled. Assert the explicit contract.
-    p = tmp_path / "rabitq.pkl"
-    with pytest.raises(NotImplementedError):
-        rabitq_index.save(p)
+def test_save_load_roundtrip(tmp_path, rabitq_index):
+    # RaBitQIndex now uses faiss.write_index / read_index internally, so
+    # save/load should round-trip without loss.
+    p = tmp_path / "rabitq.faiss"
+    rabitq_index.save(p)
 
     pytest.importorskip("faiss")
     from haag_vq.methods.search import RaBitQIndex
     fresh = RaBitQIndex()
-    with pytest.raises(NotImplementedError):
-        fresh.load(p)
+    fresh.load(p)
+
+    Q = _make_data(N=4, seed=1)
+    original_ids = rabitq_index.search(Q, k=3)
+    loaded_ids = fresh.search(Q, k=3)
+    assert np.array_equal(original_ids, loaded_ids)
+
+
+def test_qb_parameter_preserved_through_save_load(tmp_path):
+    pytest.importorskip("faiss")
+    from haag_vq.methods.search import RaBitQIndex
+    idx = RaBitQIndex(qb=8)
+    idx.fit(_make_data())
+    p = tmp_path / "rabitq_qb8.faiss"
+    idx.save(p)
+
+    loaded = RaBitQIndex()
+    loaded.load(p)
+    assert loaded._qb == 8
