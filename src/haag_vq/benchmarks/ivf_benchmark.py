@@ -250,47 +250,40 @@ def _run_rabitq(train, queries, gt, k, bpd):
 
 
 def _run_saq(train, queries, gt, k, bpd, K, nprobe):
-    """SAQ with IVF-style coarse quantizer for fast search."""
-    from haag_vq.methods.saq import SAQ
+    """SAQ via the C++ engine (``SaqIndex``).
 
-    D = train.shape[1]
-    N = train.shape[0]
+    The previous implementation imported a pure-Python SAQ scaffold that has
+    since been removed from the repo. This path now routes through
+    ``SaqIndex`` — the same wrapper used by ``run_benchmarks.py`` — so
+    ``ivf_benchmark`` and ``run_benchmarks`` measure the same SAQ.
+    """
+    from haag_vq.methods.search import SaqIndex
 
-    # Fit SAQ with bpd as num_bits
-    model = SAQ(num_bits=bpd)
+    model = SaqIndex(bpd=bpd, K=K, nprobe=nprobe)
 
     t0 = perf_counter()
     model.fit(train)
     fit_time = perf_counter() - t0
     print(f"  saq: fit in {fit_time:.1f}s")
 
-    codes = model.compress(train)
-    reconstructed = model.decompress(codes)
-
-    mse = float(np.mean(np.sum((train - reconstructed) ** 2, axis=1)))
-
-    # Use IVF coarse quantizer for fast search on SAQ reconstructions
-    coarse = faiss.IndexFlatL2(D)
-    ivf = faiss.IndexIVFFlat(coarse, D, min(K, N))
-    ivf.nprobe = nprobe
-    ivf.train(reconstructed.astype(np.float32))
-    ivf.add(reconstructed.astype(np.float32))
-
     t0 = perf_counter()
-    _, I = ivf.search(queries, k)
+    I = model.search(queries, k)
     search_time = perf_counter() - t0
 
     recall = _recall_at_k(gt, I, k)
     qps = len(queries) / max(search_time, 1e-12)
-    mem = codes.nbytes if isinstance(codes, np.ndarray) else sys.getsizeof(codes)
+    mem = int(model.memory_footprint())
     comp = train.nbytes / max(mem, 1)
 
+    # SaqIndex.reconstruction_mse is intentionally None (construct() path does
+    # not retain raw codes for decompression). Leave mse blank — matches
+    # faiss_ivfpq row.
     return {
         "recall_at_k": recall,
         "qps": qps,
         "memory_bytes": mem,
         "compression_ratio": comp,
-        "mse": mse,
+        "mse": "",
     }
 
 

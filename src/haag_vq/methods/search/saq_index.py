@@ -78,6 +78,7 @@ class SaqIndex(BaseSearchIndex):
 
         # K-means clustering via faiss-cpu
         K = min(self._K, self._N // 10)  # avoid too many clusters for small data
+        self._K = K  # reflect the actually-used K in memory_footprint / reporting
         centroids, assignments = _faiss_kmeans(X, K, seed=0)
         centroids = np.ascontiguousarray(centroids, dtype=np.float32)
 
@@ -111,7 +112,10 @@ class SaqIndex(BaseSearchIndex):
     def memory_footprint(self) -> int:
         if self._index is None:
             return 0
-        code_bytes = int(self._N * self._bpd / 8.0)
+        # Each of N vectors is encoded as D dims at bpd bits/dim. The prior
+        # version dropped the D factor, underreporting code storage by ~D×
+        # (e.g. 51.2 MB read as 50 KB at N=100K, D=1024, bpd=4).
+        code_bytes = int(self._N * self._D * self._bpd / 8.0)
         centroid_bytes = self._K * self._D * 4  # float32
         return code_bytes + centroid_bytes
 
