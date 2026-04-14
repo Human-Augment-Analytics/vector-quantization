@@ -15,6 +15,7 @@ Usage from slurm scripts:
 
 import csv
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
@@ -203,6 +204,51 @@ def _run_faiss_ivfpq(train, queries, gt, k, bpd, K, nprobe):
     }
 
 
+def _run_rabitq(train, queries, gt, k, bpd):
+    """RaBitQ with brute-force search on reconstructed vectors.
+
+    Note: ``bpd`` is ignored. RaBitQ encodes each normalised vector at ~1 bit
+    per dimension by construction — the value is accepted only so that the
+    method-runner signature matches the others in ``METHOD_RUNNERS``.
+    """
+    from haag_vq.methods.rabit_quantization import RaBitQuantizer
+    from haag_vq.utils.faiss_utils import MetricType
+
+    D = train.shape[1]
+    model = RaBitQuantizer(metric_type=MetricType.L2)
+
+    t0 = perf_counter()
+    model.fit(train)
+    fit_time = perf_counter() - t0
+    print(f"  rabitq: fit in {fit_time:.1f}s")
+
+    codes = model.compress(train)
+    reconstructed = model.decompress(codes).astype(np.float32)
+
+    mse = float(np.mean(np.sum((train - reconstructed) ** 2, axis=1)))
+
+    # Flat search on reconstructed vectors — matches pq_flat / sq_flat shape.
+    index = faiss.IndexFlatL2(D)
+    index.add(reconstructed)
+
+    t0 = perf_counter()
+    _, I = index.search(queries, k)
+    search_time = perf_counter() - t0
+
+    recall = _recall_at_k(gt, I, k)
+    qps = len(queries) / max(search_time, 1e-12)
+    mem = int(codes.nbytes) if isinstance(codes, np.ndarray) else sys.getsizeof(codes)
+    comp = train.nbytes / max(mem, 1)
+
+    return {
+        "recall_at_k": recall,
+        "qps": qps,
+        "memory_bytes": mem,
+        "compression_ratio": comp,
+        "mse": mse,
+    }
+
+
 def _run_saq(train, queries, gt, k, bpd, K, nprobe):
     """SAQ with IVF-style coarse quantizer for fast search."""
     from haag_vq.methods.saq import SAQ
@@ -253,7 +299,21 @@ METHOD_RUNNERS = {
     "sq_flat": lambda t, q, gt, k, bpd, K, np_: _run_sq_flat(t, q, gt, k, bpd),
     "faiss_ivfpq": _run_faiss_ivfpq,
     "saq": _run_saq,
+    "rabitq": lambda t, q, gt, k, bpd, K, np_: _run_rabitq(t, q, gt, k, bpd),
 }
+
+
+def _utc_timestamp() -> str:
+    """Return the current UTC time as an ISO-8601 string (second precision)."""
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _timestamped_output_path(path: Path, now: Optional[datetime] = None) -> Path:
+    """Insert ``_YYYYMMDD_HHMMSS`` before the suffix to prevent re-run overwrites."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    stamp = now.strftime('%Y%m%d_%H%M%S')
+    return path.with_name(f"{path.stem}_{stamp}{path.suffix}")
 
 
 def ivf_benchmark(
@@ -289,6 +349,7 @@ def ivf_benchmark(
 
     method_list = [m.strip() for m in methods.split(",")]
     results = []
+    run_ts = _utc_timestamp()
 
     for method_name in method_list:
         runner = METHOD_RUNNERS.get(method_name)
@@ -305,6 +366,7 @@ def ivf_benchmark(
                 "k": k,
                 "N": N,
                 "D": D,
+                "timestamp": run_ts,
                 **metrics,
             }
             results.append(row)
@@ -316,13 +378,13 @@ def ivf_benchmark(
             import traceback
             traceback.print_exc()
 
-    # Write CSV
+    # Write CSV — filename is timestamped so re-runs don't clobber.
     if results:
-        out_path = Path(output)
+        out_path = _timestamped_output_path(Path(output))
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         fieldnames = ["method", "recall_at_k", "qps", "memory_bytes",
-                       "compression_ratio", "mse", "k", "N", "D"]
+                       "compression_ratio", "mse", "k", "N", "D", "timestamp"]
         with open(out_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
