@@ -207,17 +207,70 @@ MSMarco 100K + DBPedia are both Cohere/OpenAI embeddings with similar structure.
 
 ---
 
-## 8. Execution order (recommended)
+## 8. 53M scale: get comparable recall/QPS (blocking)
+
+**Status:** currently broken — MSMarco 53M numbers are not directly comparable to the MSMarco 100K table.
+
+**Root cause:** two divergent runners.
+- `slurm/bench_msmarco_100k.sh` → `haag_vq.benchmarks.ivf_benchmark` → builds a real search index, measures recall / QPS / memory / MSE.
+- `msmarco.sh` (53M) → `haag_vq.benchmarks.streaming_sweep` → never builds an index, only computes streaming reconstruction MSE + compression.
+
+`streaming_sweep` exists because 53M × 1024d × float32 ≈ 217 GB, which doesn't fit in a standard SLURM allocation if you try to load the whole corpus. `ivf_benchmark` doesn't stream — it does `np.load('train.npy')` and expects the full corpus in RAM.
+
+Result: the "SAQ beats Faiss-IVFPQ" story from the 100K run has no 53M analog because the 53M path only produces compression/MSE, not recall/QPS.
+
+### Three paths to fix
+
+**Path 1 (cheapest, ~2h): materialize 53M as `.npy`, memmap it, keep `ivf_benchmark`**
+1. One-time: convert the HF parquet at `datasets/msmarco-v2.1-embed-english-v3/` → `train.npy` on shared storage. **Prerequisite:** verify ~220 GB quota headroom. Script: iterate HF `load_dataset(..., streaming=True)`, write a pre-allocated `np.memmap` to `.npy`.
+2. Subsample 100–1000 query vectors into `queries.npy`.
+3. Patch `ivf_benchmark._load_npy_dataset`: `np.load(train_path, mmap_mode='r')` instead of a full in-RAM load. faiss `index.add()` copies batch-by-batch from the memmap; only the index's working set lives in RAM.
+4. Copy `bench_msmarco_100k.sh` → `bench_msmarco_53m.sh`, swap dataset path, bump `--mem` (probably 48–64 G for IVF-based methods; flat indexes would need ~220 G).
+5. Run. Results comparable to 100K table.
+
+**Path 2 (unifying, ~1 day): teach `ivf_benchmark` to stream-build**
+1. Train coarse quantizer on a 1M sample (already done in streaming pipeline).
+2. Stream HF iterator, call `index.add()` batch-by-batch. faiss IVF/IVFRaBitQ/IVFPQ support incremental add. Flat indexes don't — either skip them at 53M or fall back to Path 1 for them only.
+3. After stream completes, evaluate queries against the on-disk index. Save via `faiss.write_index`.
+4. Deprecate `streaming_sweep.py` (MSE-only) — replaced by the unified harness.
+
+Path 2 is the better long-term shape but not needed to unblock the current Slack claim; Path 1 is sufficient.
+
+**Path 3 (not recommended): keep `streaming_sweep` but add faiss index construction alongside.** Creates a third partially-overlapping runner. Skip.
+
+### Prerequisites for Path 1
+
+- Verify disk quota: `df -h /storage/ice-shared/cs8903onl/` → need ≥ 220 GB free; if tight, consider writing the `.npy` under scratch (`/storage/ice1/0/3/rshah95/scratch/` if that has quota) and symlinking.
+- Verify the HF parquet download is complete in the shared datasets dir (earlier `ls` showed `msmarco-v2.1-embed-english-v3/` present; confirm row count matches 53M).
+- Decide query provenance. The 100K script synthesises queries from the tail of train. For 53M, either (a) hold out the last 1000 rows from train, or (b) use the actual MS MARCO query set if it's in the HF dataset.
+
+### Known caveats once we run it
+
+- `streaming_sweep.py` itself has two correctness bugs that carry over if we keep using it as a fallback for methods that don't fit Path 1: (i) SAQ branch references the deleted Python scaffold and crashes, (ii) RaBitQ branch uses the old decode-era path, not the native estimator. Both fixed by either deprecating `streaming_sweep` (Path 2) or by routing through `SaqIndex` / `RaBitQIndex` in-place (smaller patch, but keeps the parallel runner alive).
+- SLURM `--tmp=100G` is still probably correct for HF cache residue even under Path 1, since HF metadata still writes to cache during any `datasets` preprocessing.
+
+### Next action (resume here)
+
+1. `df -h /storage/ice-shared/cs8903onl/` — confirm quota.
+2. Write a small `scripts/materialize_msmarco_53m.py` that streams the HF parquet into a single `.npy` memmap under `datasets/msmarco_53m/train.npy`.
+3. Run it (one-time, 1–2h depending on I/O).
+4. Patch `ivf_benchmark._load_npy_dataset` for memmap support.
+5. Submit `bench_msmarco_53m.sh`.
+
+This is blocking for any headline claim about SAQ/RaBitQ beating SotA at scale — without comparable 53M recall numbers, every number in the Slack update is a 100K claim.
+
+## 9. Execution order (recommended)
 
 1. **Today (Apr 14, already in flight):** Track A — rewrite `RaBitQIndex` to native estimator, add `rabitq_ivf`, promote OPQ.
-2. **Next session:** ScaNN (cheap, high signal). AQ via faiss residual quantizers (cheap, closes a fairness gap).
-3. **Session after:** Extended-RaBitQ Path A (AVX512 probe → build → wrapper). Fall back to Path B if AVX512 missing.
-4. **Eventually:** CSV schema refactor (§7.1), effective-bpd reporting (§7.2), dataset diversity (§7.4).
-5. **Conditional:** LVQ if the roster still has a gap after (1)–(4).
+2. **Blocking follow-up (§8):** materialize 53M as `.npy` + memmap patch + re-run — get real recall/QPS at scale. Until this lands, "SotA comparison" = "100K SotA comparison."
+3. **Next session:** ScaNN (cheap, high signal). AQ via faiss residual quantizers (cheap, closes a fairness gap).
+4. **Session after:** Extended-RaBitQ Path A (AVX512 probe → build → wrapper). Fall back to Path B if AVX512 missing.
+5. **Eventually:** CSV schema refactor (§7.1), effective-bpd reporting (§7.2), dataset diversity (§7.4).
+6. **Conditional:** LVQ if the roster still has a gap after (1)–(5).
 
 ---
 
-## 9. Deferred questions for later
+## 10. Deferred questions for later
 
 - What's the target "headline" comparison table? (methods × datasets × compression buckets — how many cells?)
 - Who's the audience for these numbers — a paper, an internal doc, an ablation for a talk? Affects reporting rigor.
@@ -225,7 +278,7 @@ MSMarco 100K + DBPedia are both Cohere/OpenAI embeddings with similar structure.
 
 ---
 
-## 10. Known tech-debt items (tangential but worth noting)
+## 11. Known tech-debt items (tangential but worth noting)
 
 - `_bpd_to_pq_M` in `ivf_benchmark` clamps to divisors of D; bpd=4 and bpd=6 collapse to the same M at D=1024. Doesn't affect SotA integration but confuses the Faiss sweep.
 - `SaqIndex.memory_footprint` was fixed on Apr 14 (D-factor restored); prior CSVs pre-fix are invalid for SAQ.
