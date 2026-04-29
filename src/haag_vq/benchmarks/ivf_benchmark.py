@@ -30,22 +30,39 @@ except ImportError:
 
 
 def _load_npy_dataset(dataset_dir: str, num_queries: int = 1000):
-    """Load train.npy and queries.npy from a directory.
+    """Load train.npy (or a shard directory) and queries.npy from a directory.
 
-    If queries.npy doesn't exist, splits the last `num_queries` rows
-    from train.npy as queries.
+    Layout options:
+      A) ``train.npy`` (single ndarray): standard path.
+      B) ``train_shards/`` directory of ``*.npy`` shards: loaded via
+         ``haag_vq.utils.shard_loader`` into a single contiguous float32
+         ndarray. Used for corpora too large to materialize as one .npy
+         file (e.g. MS MARCO 113M).
+
+    If ``queries.npy`` is missing, the tail of ``train`` is split off.
     """
     d = Path(dataset_dir)
     train_path = d / "train.npy"
+    train_shards_dir = d / "train_shards"
     queries_path = d / "queries.npy"
     gt_path = d / "ground_truth.npy"
 
-    if not train_path.exists():
-        raise FileNotFoundError(f"train.npy not found in {d}")
+    if train_path.exists():
+        loaded = np.load(train_path)
+        train = loaded if loaded.dtype == np.float32 else loaded.astype(np.float32)
+    elif train_shards_dir.is_dir():
+        from haag_vq.utils.shard_loader import load_sharded_corpus
+        train = load_sharded_corpus(train_shards_dir, out_dtype=np.float32)
+    else:
+        raise FileNotFoundError(
+            f"Neither train.npy nor train_shards/ found in {d}"
+        )
 
-    train = np.load(train_path).astype(np.float32)
     if queries_path.exists():
-        queries = np.load(queries_path).astype(np.float32)
+        q_loaded = np.load(queries_path)
+        queries = (
+            q_loaded if q_loaded.dtype == np.float32 else q_loaded.astype(np.float32)
+        )
     else:
         queries = train[-num_queries:]
         train = train[:-num_queries]
@@ -336,15 +353,23 @@ def _run_saq(train, queries, gt, k, bpd, K, nprobe):
     mem = int(model.memory_footprint())
     comp = train.nbytes / max(mem, 1)
 
-    # SaqIndex.reconstruction_mse is intentionally None (construct() path does
-    # not retain raw codes for decompression). Leave mse blank — matches
-    # faiss_ivfpq row.
+    # MSE on a 1000-vector sample. SaqIndex now uses fit() (raw-code caching)
+    # so decompress() is available; computing on the full corpus would be
+    # gratuitously expensive at 100M+ scale.
+    sample_n = min(1000, train.shape[0])
+    sample_ids = np.arange(sample_n, dtype=np.uint32)
+    try:
+        mse = model.reconstruction_mse(train, sample_ids=sample_ids)
+    except Exception as e:  # noqa: BLE001
+        print(f"  saq: reconstruction_mse failed: {e}")
+        mse = None
+
     return {
         "recall_at_k": recall,
         "qps": qps,
         "memory_bytes": mem,
         "compression_ratio": comp,
-        "mse": "",
+        "mse": mse if mse is not None else "",
     }
 
 
