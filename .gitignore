@@ -217,3 +217,10 @@ dist/
 # Backup files and old logs
 *.bak
 *.log
+
+# Scavenger tooling (local; .scavenger is a symlink to native-fs state)
+.scavenger
+.scavenger/
+.mcp.json
+.cursor/
+.claude/
