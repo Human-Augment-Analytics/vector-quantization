@@ -1,0 +1,12 @@
+# Dev/iteration config — dbpedia-100K (WSL-safe, ~600 MB).
+dataset:
+  name: dbpedia_100k
+  base_fvecs: /mnt/e/Documents/OMSCS/07_2026_Spring/CS6999/SAQ/data/datasets/dbpedia_100k/vectors.fvecs
+  query_fvecs: /mnt/e/Documents/OMSCS/07_2026_Spring/CS6999/SAQ/data/datasets/dbpedia_100k/queries.fvecs
+  n_queries: 1000            # dbpedia query file is small; 10K is the MSMARCO-tier target
+methods: [pq, opq, sq]       # SAQ-engine methods added after the wheel phase
+bpd: [1, 2, 3, 4, 5, 6, 7, 8]
+ks: [1, 10, 100]
+chunk_size: 50000
+mse_sample: 100000
+output_dir: results/dbpedia_dev
