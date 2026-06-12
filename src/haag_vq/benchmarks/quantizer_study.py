@@ -25,17 +25,13 @@ from haag_vq.benchmarks.exact_search import (
     recall_at_ks,
     search_index,
 )
-from haag_vq.benchmarks.method_registry import FAISS_METHODS, build_faiss_quantizer
 from haag_vq.benchmarks.quantizer_adapters import Quantizer
 from haag_vq.benchmarks.study_config import StudyConfig, load_study_config
 
 
 def _build_quantizer(method: str, bpd: float, D: int) -> Quantizer:
-    if method in FAISS_METHODS:
-        return build_faiss_quantizer(method, bpd=bpd, D=D)
-    # SAQ-engine methods are registered in method_registry_saq (later task).
-    from haag_vq.benchmarks.method_registry_saq import build_saq_quantizer  # lazy
-    return build_saq_quantizer(method, bpd=bpd, D=D)
+    from haag_vq.benchmarks.method_registry import build_quantizer
+    return build_quantizer(method, bpd=bpd, D=D)
 
 
 def run_study_arrays(

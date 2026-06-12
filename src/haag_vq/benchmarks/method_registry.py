@@ -44,3 +44,17 @@ def build_faiss_quantizer(method: str, bpd: float, D: int) -> FaissQuantizerAdap
         nb = 4 if bpd <= 4.5 else (8 if bpd <= 12 else 16)
         return FaissQuantizerAdapter(ScalarQuantizer(num_bits=nb))
     raise ValueError(f"Unknown faiss method: {method!r}")
+
+
+SAQ_METHODS = ("saq_paper", "ours", "rabitq", "lvq")
+ALL_METHODS = FAISS_METHODS + SAQ_METHODS
+
+
+def build_quantizer(method: str, bpd: float, D: int):
+    """Dispatch to the faiss family or the SAQ-study family."""
+    if method in FAISS_METHODS:
+        return build_faiss_quantizer(method, bpd=bpd, D=D)
+    if method in SAQ_METHODS:
+        from haag_vq.benchmarks.method_registry_saq import build_saq_quantizer
+        return build_saq_quantizer(method, bpd=bpd, D=D)
+    raise ValueError(f"Unknown method: {method!r}")
