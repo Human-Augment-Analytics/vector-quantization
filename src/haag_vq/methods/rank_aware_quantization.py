@@ -1,6 +1,7 @@
 import numpy as np
 
 from .base_quantizer import BaseQuantizer
+from .ffd_packing import ffd_layout, ffd_encode, ffd_decode
 
 
 def _lloyd_1d_normal(num_levels: int, seed: int, n_samples: int = 200_000,
@@ -72,13 +73,19 @@ class RankAwareQuantizer(BaseQuantizer):
     """
 
     def __init__(self, avg_bits: float, alpha: float = 1.0,
-                 max_bits: int = 8, seed: int = 0):
+                 max_bits: int = 8, seed: int = 0, packing: str = "dense"):
         if max_bits < 1 or max_bits > 8:
             raise ValueError("max_bits must be in [1, 8]")
+        if packing not in ("dense", "ffd"):
+            raise ValueError("packing must be 'dense' or 'ffd'")
+        if packing == "ffd" and max_bits > 8:
+            # Each dim's code must fit wholly inside one byte for FFD packing.
+            raise ValueError("packing='ffd' requires max_bits <= 8")
         self.avg_bits = float(avg_bits)
         self.alpha = float(alpha)
         self.max_bits = int(max_bits)
         self.seed = int(seed)
+        self.packing = packing
 
         # Learned state (set in fit).
         self.mu: np.ndarray | None = None
@@ -89,6 +96,10 @@ class RankAwareQuantizer(BaseQuantizer):
         self.D: int | None = None
         self._offsets: np.ndarray | None = None  # bit start offset per dim
         self.code_size: int | None = None
+        # FFD layout (set in fit when packing == "ffd").
+        self._ffd_byte_idx: np.ndarray | None = None
+        self._ffd_bit_off: np.ndarray | None = None
+        self._ffd_n_bytes: int | None = None
 
     # ------------------------------------------------------------------ fit
     def fit(self, X: np.ndarray) -> None:
@@ -160,7 +171,16 @@ class RankAwareQuantizer(BaseQuantizer):
         # Bit-packing layout: cumulative offsets and total code size.
         self._offsets = np.concatenate(([0], np.cumsum(self.bits))).astype(np.int64)
         total_bits = int(self.bits.sum())
-        self.code_size = (total_bits + 7) // 8
+
+        if self.packing == "ffd":
+            # Pack each dim's code wholly inside one byte (byte-aligned decode).
+            byte_idx, bit_off, n_bytes = ffd_layout(self.bits)
+            self._ffd_byte_idx = byte_idx
+            self._ffd_bit_off = bit_off
+            self._ffd_n_bytes = int(n_bytes)
+            self.code_size = int(n_bytes)
+        else:
+            self.code_size = (total_bits + 7) // 8
 
     # -------------------------------------------------------------- helpers
     def _quantize_dim(self, y_d: np.ndarray, d: int) -> np.ndarray:
@@ -181,6 +201,16 @@ class RankAwareQuantizer(BaseQuantizer):
             raise ValueError(f"compress() got D={D}, but fit() saw D={self.D}")
 
         Y = (X - self.mu) @ self.V  # (N, D) projected coords
+
+        if self.packing == "ffd":
+            # Quantize each dim to its index, then pack via the FFD byte layout.
+            code_mat = np.zeros((N, D), dtype=np.int64)
+            for d in range(D):
+                if int(self.bits[d]) == 0:
+                    continue
+                code_mat[:, d] = self._quantize_dim(Y[:, d], d)
+            return ffd_encode(code_mat, self.bits, self._ffd_byte_idx,
+                              self._ffd_bit_off, self._ffd_n_bytes)
 
         # Build a per-vector bit matrix (N, total_bits), MSB-first per dim,
         # then packbits into uint8.
@@ -206,9 +236,20 @@ class RankAwareQuantizer(BaseQuantizer):
         D = self.D
         total_bits = int(self.bits.sum())
 
+        Yhat = np.zeros((N, D), dtype=np.float64)
+
+        if self.packing == "ffd":
+            code_mat = ffd_decode(codes, self.bits, self._ffd_byte_idx,
+                                  self._ffd_bit_off, D)  # (N, D) indices
+            for d in range(D):
+                if int(self.bits[d]) == 0:
+                    continue  # Yhat stays 0.0
+                Yhat[:, d] = self.cb[d][code_mat[:, d]]
+            Xhat = Yhat @ self.V.T + self.mu
+            return Xhat.astype(np.float32)
+
         bit_mat = np.unpackbits(codes, axis=1)[:, :total_bits]  # (N, total_bits)
 
-        Yhat = np.zeros((N, D), dtype=np.float64)
         for d in range(D):
             b = int(self.bits[d])
             if b == 0:

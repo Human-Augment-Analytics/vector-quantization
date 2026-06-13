@@ -61,3 +61,26 @@ def test_alpha0_is_mse_optimal():
         q = RankAwareQuantizer(avg_bits=3, alpha=a); q.fit(X)
         mse[a] = float(np.mean((X - q.decompress(q.compress(X)))**2))
     assert mse[0.0] <= mse[1.0] <= mse[2.0], mse
+
+
+def test_ffd_roundtrip():
+    # FFD packing is lossless: same dequantized reconstruction as dense.
+    X = _data()
+    qd = RankAwareQuantizer(avg_bits=4, alpha=1.0, packing="dense"); qd.fit(X)
+    qf = RankAwareQuantizer(avg_bits=4, alpha=1.0, packing="ffd"); qf.fit(X)
+    # same per-dim allocation/codebooks -> reconstruction must be identical.
+    np.testing.assert_array_equal(qf.bits, qd.bits)
+    xhat_dense = qd.decompress(qd.compress(X))
+    xhat_ffd = qf.decompress(qf.compress(X))
+    assert xhat_ffd.shape == X.shape and np.isfinite(xhat_ffd).all()
+    np.testing.assert_array_equal(xhat_ffd, xhat_dense)
+
+
+def test_ffd_compression_between_dense_and_naive():
+    X = _data()
+    D = X.shape[1]
+    qd = RankAwareQuantizer(avg_bits=4, alpha=1.0, packing="dense"); qd.fit(X)
+    qf = RankAwareQuantizer(avg_bits=4, alpha=1.0, packing="ffd"); qf.fit(X)
+    dense_bytes = qd.code_size
+    ffd_bytes = qf.code_size
+    assert dense_bytes <= ffd_bytes <= D
