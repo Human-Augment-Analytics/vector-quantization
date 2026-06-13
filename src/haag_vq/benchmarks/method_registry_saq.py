@@ -13,7 +13,7 @@ dependency in one path never breaks another.
 
 from __future__ import annotations
 
-SAQ_METHODS = ("saq_paper", "ours", "rabitq", "lvq")
+SAQ_METHODS = ("saq_paper", "ours", "rabitq", "lvq", "rankaware", "perdim_mse")
 
 
 def build_saq_quantizer(method: str, bpd: float, D: int):
@@ -36,4 +36,12 @@ def build_saq_quantizer(method: str, bpd: float, D: int):
         from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
         from haag_vq.methods.lvq_quantization import LVQQuantizer
         return FaissQuantizerAdapter(LVQQuantizer(num_bits=b))
+    if method == "rankaware":
+        from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
+        from haag_vq.methods.rank_aware_quantization import RankAwareQuantizer
+        return FaissQuantizerAdapter(RankAwareQuantizer(avg_bits=bpd, alpha=0.5, packing="ffd"))
+    if method == "perdim_mse":
+        from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
+        from haag_vq.methods.rank_aware_quantization import RankAwareQuantizer
+        return FaissQuantizerAdapter(RankAwareQuantizer(avg_bits=bpd, alpha=0.0, packing="ffd"))
     raise ValueError(f"Unknown SAQ-study method: {method!r}")
