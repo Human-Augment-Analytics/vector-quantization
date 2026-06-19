@@ -224,3 +224,6 @@ dist/
 .mcp.json
 .cursor/
 .claude/
+
+# approx-packing regenerable cost-table cache
+results/**/cost_table.npy
