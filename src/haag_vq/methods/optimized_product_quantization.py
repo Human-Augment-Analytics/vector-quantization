@@ -23,8 +23,9 @@ class OptimizedProductQuantizer(BaseQuantizer):
         assert D % self.M == 0, "D must be divisible by M"
         self.opq = faiss.OPQMatrix(D, self.M, D)
         self.opq.train(X)
+        X_rot = np.ascontiguousarray(self.opq.apply(X), dtype=np.float32)
         self.pq = faiss.ProductQuantizer(D, self.M, self.B)
-        self.pq.train(X)
+        self.pq.train(X_rot)
 
     def compress(self, X: np.ndarray) -> np.ndarray:
         return self.pq.compute_codes(self.opq.apply(X))  # shape: (N, M)

@@ -21,8 +21,12 @@ dependencies = [
   "datasets",
   "sentence-transformers",
   "matplotlib",
-  "faiss-cpu"
+  "faiss-cpu",
+  "pyyaml"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 vq-benchmark = "haag_vq.cli:app"

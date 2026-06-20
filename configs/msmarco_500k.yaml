@@ -1,0 +1,15 @@
+# Confirmation run (WSL-safe tier): Cohere MSMARCO v2.1, 500K raw passages
+# (1024-d, unit-normalised), 10K held-out pseudo-queries. Build the dir first:
+#   python scripts/prep_msmarco_bench.py --n 500000 --queries 10000 \
+#       --out /mnt/e/Documents/OMSCS/07_2026_Spring/CS6999/SAQ/data/datasets/msmarco_500k
+dataset:
+  name: msmarco_500k
+  base_fvecs: /mnt/e/Documents/OMSCS/07_2026_Spring/CS6999/SAQ/data/datasets/msmarco_500k/base.fvecs
+  query_fvecs: /mnt/e/Documents/OMSCS/07_2026_Spring/CS6999/SAQ/data/datasets/msmarco_500k/query.fvecs
+  n_queries: 10000
+methods: [pq, sq, rabitq, saq_paper, ours, perdim_mse, rankaware]
+bpd: [1, 2, 3, 4, 5, 6]
+ks: [1, 10, 100]
+chunk_size: 50000
+mse_sample: 100000
+output_dir: results/msmarco_500k
