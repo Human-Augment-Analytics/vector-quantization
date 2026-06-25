@@ -10,7 +10,7 @@ def _data(seed=0, n=2000, d=64):
 
 
 def test_saq_methods_set():
-    assert set(SAQ_METHODS) == {"saq_paper", "ours", "rabitq", "lvq", "rankaware", "perdim_mse"}
+    assert set(SAQ_METHODS) == {"saq_paper", "ours", "ours_exact", "rabitq", "lvq", "rankaware", "perdim_mse"}
 
 
 @pytest.mark.parametrize("method", ["rabitq", "lvq"])
@@ -23,7 +23,7 @@ def test_numpy_methods_build_fit_reconstruct(method):
     assert q.code_bytes() > 0
 
 
-@pytest.mark.parametrize("method", ["saq_paper", "ours"])
+@pytest.mark.parametrize("method", ["saq_paper", "ours", "ours_exact"])
 def test_engine_methods_build_fit_reconstruct(method):
     pytest.importorskip("saq")
     X = _data(n=4000, d=128)

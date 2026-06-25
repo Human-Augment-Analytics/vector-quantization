@@ -77,6 +77,7 @@ class SaqEngineAdapter:
         avg_bits: float = 4.0,
         greedy: bool = False,
         derive_codebooks: bool = False,
+        exact_codebooks: bool = False,
         apply_pca: bool = True,
         K: int = 1,
         num_threads: int = 8,
@@ -89,6 +90,7 @@ class SaqEngineAdapter:
         self._avg_bits = float(avg_bits)
         self._greedy = greedy
         self._derive_codebooks = derive_codebooks
+        self._exact_codebooks = exact_codebooks
         self._apply_pca = apply_pca
         self._K = K
         self._num_threads = num_threads
@@ -113,7 +115,9 @@ class SaqEngineAdapter:
         self._n, self._D = X.shape
         cfg = self._make_config()
         index = self._saq.IVF(self._n, self._D, self._K, cfg)
-        if self._derive_codebooks:
+        if self._exact_codebooks:
+            index.set_derive_codebooks_exact(max_bits=self._max_bits)
+        elif self._derive_codebooks:
             index.set_derive_codebooks(max_bits=self._max_bits)
         index.fit(X, self._apply_pca, self._K, self._seed, self._num_threads)
         self._index = index

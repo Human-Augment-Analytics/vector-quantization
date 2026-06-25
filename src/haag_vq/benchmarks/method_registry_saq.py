@@ -13,7 +13,7 @@ dependency in one path never breaks another.
 
 from __future__ import annotations
 
-SAQ_METHODS = ("saq_paper", "ours", "rabitq", "lvq", "rankaware", "perdim_mse")
+SAQ_METHODS = ("saq_paper", "ours", "ours_exact", "rabitq", "lvq", "rankaware", "perdim_mse")
 
 
 def build_saq_quantizer(method: str, bpd: float, D: int):
@@ -27,6 +27,12 @@ def build_saq_quantizer(method: str, bpd: float, D: int):
         from haag_vq.benchmarks.quantizer_adapters import SaqEngineAdapter
         return SaqEngineAdapter(
             quant_type="CAQ", avg_bits=bpd, greedy=True, derive_codebooks=True
+        )
+    if method == "ours_exact":  # ours, but exact 1-D codebook instead of Lloyd
+        from haag_vq.benchmarks.quantizer_adapters import SaqEngineAdapter
+        return SaqEngineAdapter(
+            quant_type="CAQ", avg_bits=bpd, greedy=True,
+            derive_codebooks=True, exact_codebooks=True
         )
     if method == "rabitq":
         from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
