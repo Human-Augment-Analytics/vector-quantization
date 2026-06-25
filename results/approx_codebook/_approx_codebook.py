@@ -60,7 +60,9 @@ def _process_chunk(args):
     out = []
     for j, d in enumerate(dims):
         col = np.ascontiguousarray(cols[:, j])
-        dp = saq.build_codebook_dp(col, max_bits=MAX_BITS, num_bins=NUM_BINS)
+        # Exact (globally optimal) 1-D k-means reference — no histogram/num_bins,
+        # ~100x faster than build_codebook_dp and truly optimal (Wu/Gronlund DP).
+        dp = saq.build_codebook_exact(col, max_bits=MAX_BITS)
         ll = saq.build_codebook_lloyd(col, opts)
         for b in range(1, MAX_BITS + 1):
             dp_mse = saq.codebook_mse(col, dp.codebooks[b])
