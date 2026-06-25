@@ -73,11 +73,18 @@ class RankAwareQuantizer(BaseQuantizer):
     """
 
     def __init__(self, avg_bits: float, alpha: float = 1.0,
-                 max_bits: int = 8, seed: int = 0, packing: str = "dense"):
+                 max_bits: int = 8, seed: int = 0, packing: str = "dense",
+                 codebook: str = "gaussian"):
         if max_bits < 1 or max_bits > 8:
             raise ValueError("max_bits must be in [1, 8]")
         if packing not in ("dense", "ffd"):
             raise ValueError("packing must be 'dense' or 'ffd'")
+        if codebook not in ("gaussian", "lloyd", "exact"):
+            raise ValueError("codebook must be 'gaussian', 'lloyd', or 'exact'")
+        # codebook: per-dim centroids source (allocation + packing held fixed so this
+        # isolates the codebook's effect). 'gaussian' = analytic Lloyd-Max(N(0,1))*sigma;
+        # 'lloyd'/'exact' = data-fit on the projected column via the SAQ engine builders.
+        self.codebook = codebook
         if packing == "ffd" and max_bits > 8:
             # Each dim's code must fit wholly inside one byte for FFD packing.
             raise ValueError("packing='ffd' requires max_bits <= 8")
@@ -164,9 +171,29 @@ class RankAwareQuantizer(BaseQuantizer):
         self.bits = bits.astype(np.int64)
         assert self.bits.sum() <= total
 
-        # 5. Per-dim scaled codebooks: levels[bits[d]] * sqrt(var[d]).
+        # 5. Per-dim codebooks. 'gaussian' = analytic levels scaled by sqrt(var).
+        #    'lloyd'/'exact' = data-fit centroids on the projected column at bits[d].
         scale = np.sqrt(self.var)
-        self.cb = [self._levels[int(b)] * scale[d] for d, b in enumerate(self.bits)]
+        if self.codebook == "gaussian":
+            self.cb = [self._levels[int(b)] * scale[d] for d, b in enumerate(self.bits)]
+        else:
+            import saq
+            Y = Xc @ self.V                       # (N, D) projected coords
+            self.cb = []
+            for d, b in enumerate(self.bits):
+                b = int(b)
+                if b == 0:
+                    self.cb.append(np.array([0.0], dtype=np.float64))
+                    continue
+                col = np.ascontiguousarray(Y[:, d], dtype=np.float32)
+                if self.codebook == "exact":
+                    r = saq.build_codebook_exact(col, b)
+                else:                              # lloyd
+                    o = saq.LloydOpts(); o.max_bits = b
+                    r = saq.build_codebook_lloyd(col, o)
+                cen = np.asarray(r.codebooks[b].centroids, dtype=np.float64)
+                # the dense/ffd encoders need exactly 2^b sorted, strictly-usable levels
+                self.cb.append(np.sort(cen))
 
         # Bit-packing layout: cumulative offsets and total code size.
         self._offsets = np.concatenate(([0], np.cumsum(self.bits))).astype(np.int64)
