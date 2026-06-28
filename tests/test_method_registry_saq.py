@@ -10,7 +10,8 @@ def _data(seed=0, n=2000, d=64):
 
 
 def test_saq_methods_set():
-    assert set(SAQ_METHODS) == {"saq_paper", "ours", "ours_exact", "rabitq", "lvq", "rankaware", "perdim_mse"}
+    assert set(SAQ_METHODS) == {"saq_paper", "ours", "ours_exact", "rabitq", "lvq",
+                                "rankaware", "perdim_mse", "rankaware_exact", "perdim_mse_exact"}
 
 
 @pytest.mark.parametrize("method", ["rabitq", "lvq"])
