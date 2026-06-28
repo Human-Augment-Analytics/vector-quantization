@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Full 7-method benchmark on dbpedia-100K.
+"""Full method-comparison recall benchmark (env-parameterized, any dataset/scale).
 
-Runs:
-  - 6 methods (pq, sq, rabitq, lvq, saq_paper, ours) at bpd 1..8
-  - opq at bpd 1, 2, 4  (pathologically slow at high bpd)
-
-Writes combined CSV + Pareto plots to results/dbpedia_dev_full/.
+Default methods (override with VQ_METHODS): baselines pq/sq/rabitq/lvq, engine
+saq_paper/ours/ours_exact, and the per-dim methods rankaware/perdim_mse (Lloyd
+codebook) + rankaware_exact/perdim_mse_exact (optimal-DP codebook reference), at
+bpd 1..8; opq at bpd 1,2,4 (slow at high bpd). The proposed method ("Ours") is
+rankaware. Writes combined CSV + Pareto plots to VQ_OUT_DIR.
 """
 
 import sys
@@ -47,7 +47,12 @@ CHUNK_SIZE = 50_000
 MSE_SAMPLE = 100_000
 
 FULL_METHODS = os.environ.get(
-    "VQ_METHODS", "pq,sq,rabitq,lvq,saq_paper,ours,rankaware,perdim_mse").split(",")
+    "VQ_METHODS",
+    # baselines + engine ours(+exact) + per-dim methods (Lloyd codebook) with their
+    # *_exact optimal-DP-codebook references. saq_paper/ours are baselines; the
+    # proposed method ("Ours") is rankaware.
+    "pq,sq,rabitq,lvq,saq_paper,ours,ours_exact,"
+    "rankaware,perdim_mse,rankaware_exact,perdim_mse_exact").split(",")
 FULL_BPD = [int(b) for b in os.environ.get("VQ_BPD", "1,2,3,4,5,6,7,8").split(",")]
 
 OPQ_METHODS = ["opq"]
