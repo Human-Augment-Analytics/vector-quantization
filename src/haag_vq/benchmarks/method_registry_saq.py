@@ -18,21 +18,28 @@ SAQ_METHODS = ("saq_paper", "ours", "ours_exact", "rabitq", "lvq", "rankaware", 
 
 def build_saq_quantizer(method: str, bpd: float, D: int):
     b = int(round(bpd))
+    # VQ_SAQ_APPLY_PCA=0 lets SAQ skip its (slow Eigen) internal PCA when the
+    # input data is already PCA-rotated (e.g. vectors_pca.fvecs). Default 1.
+    import os
+    _apply_pca = os.environ.get("VQ_SAQ_APPLY_PCA", "1") != "0"
     if method == "saq_paper":
         from haag_vq.benchmarks.quantizer_adapters import SaqEngineAdapter
         return SaqEngineAdapter(
-            quant_type="CAQ", avg_bits=bpd, greedy=False, derive_codebooks=False
+            quant_type="CAQ", avg_bits=bpd, greedy=False, derive_codebooks=False,
+            apply_pca=_apply_pca,
         )
     if method == "ours":
         from haag_vq.benchmarks.quantizer_adapters import SaqEngineAdapter
         return SaqEngineAdapter(
-            quant_type="CAQ", avg_bits=bpd, greedy=True, derive_codebooks=True
+            quant_type="CAQ", avg_bits=bpd, greedy=True, derive_codebooks=True,
+            apply_pca=_apply_pca,
         )
     if method == "ours_exact":  # ours, but exact 1-D codebook instead of Lloyd
         from haag_vq.benchmarks.quantizer_adapters import SaqEngineAdapter
         return SaqEngineAdapter(
             quant_type="CAQ", avg_bits=bpd, greedy=True,
-            derive_codebooks=True, exact_codebooks=True
+            derive_codebooks=True, exact_codebooks=True,
+            apply_pca=_apply_pca,
         )
     if method == "rabitq":
         from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter

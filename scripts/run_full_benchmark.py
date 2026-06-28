@@ -137,13 +137,36 @@ def main():
     from datetime import datetime, timezone
 
     n, D = X.shape
-    print("Computing exact norms and ground truth...")
-    t0 = time.time()
-    norms = compute_exact_norms(X)
-    gt = normalized_ground_truth(X, Q, k=max(KS), norms=norms, chunk=CHUNK_SIZE)
-    rng = np.random.default_rng(0)
-    sample_ids = rng.choice(n, MSE_SAMPLE, replace=False).astype(np.uint32) if n > MSE_SAMPLE else np.arange(n, dtype=np.uint32)
-    print(f"  GT done in {time.time()-t0:.1f}s")
+    # Ground truth is identical across all (method,bpd) cells, so cache it once
+    # to disk keyed by (n, n_queries, max_k, mse_sample). At scale (2M) this
+    # avoids every array cell recomputing the O(n*nq*D) exact search. A single
+    # gt-prep job (VQ_GT_ONLY=1) can populate the cache; cells then just load.
+    gt_cache = os.environ.get("VQ_GT_CACHE") or os.path.join(
+        _DATA_DIR, f"gt_cache_n{n}_q{N_QUERIES}_k{max(KS)}_mse{MSE_SAMPLE}.npz")
+    if os.path.exists(gt_cache):
+        print(f"Loading cached GT: {gt_cache}")
+        _z = np.load(gt_cache)
+        norms, gt, sample_ids = _z["norms"], _z["gt"], _z["sample_ids"]
+        print(f"  loaded GT {gt.shape}")
+    else:
+        print("Computing exact norms and ground truth...")
+        t0 = time.time()
+        norms = compute_exact_norms(X)
+        gt = normalized_ground_truth(X, Q, k=max(KS), norms=norms, chunk=CHUNK_SIZE)
+        rng = np.random.default_rng(0)
+        sample_ids = rng.choice(n, MSE_SAMPLE, replace=False).astype(np.uint32) if n > MSE_SAMPLE else np.arange(n, dtype=np.uint32)
+        print(f"  GT done in {time.time()-t0:.1f}s")
+        # atomic write (race-safe). NOTE: np.savez appends ".npz" if the name
+        # lacks it, so the temp name MUST already end in ".npz" or os.replace
+        # would look for the wrong file.
+        tmp = f"{gt_cache}.tmp.{os.getpid()}.npz"
+        np.savez(tmp, norms=norms, gt=gt, sample_ids=sample_ids)
+        os.replace(tmp, gt_cache)
+        print(f"  cached GT -> {gt_cache}")
+
+    if os.environ.get("VQ_GT_ONLY"):
+        print("VQ_GT_ONLY set — GT cached, exiting before method sweep.")
+        return
 
     def run_cell(method, bpd):
         t_start = time.time()
@@ -189,6 +212,8 @@ def main():
     # ------------------------------------------------------------------
     print("\n=== 6 full-range methods (bpd 1..8) ===")
     for method in FULL_METHODS:
+        if method == "opq":
+            continue  # opq handled by its own (gated) block below
         for bpd in FULL_BPD:
             row, wall, err = run_cell(method, bpd)
             if row is not None:
@@ -203,7 +228,7 @@ def main():
     # OPQ: bpd 1, 2, 4 only
     # ------------------------------------------------------------------
     print("\n=== OPQ (bpd 1, 2, 4 only) ===")
-    for bpd in OPQ_BPD:
+    for bpd in (OPQ_BPD if "opq" in FULL_METHODS else []):
         row, wall, err = run_cell("opq", bpd)
         if row is not None:
             all_rows.append(row)
