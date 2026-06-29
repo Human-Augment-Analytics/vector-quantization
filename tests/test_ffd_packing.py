@@ -58,3 +58,15 @@ def test_all_widths_1_to_8_roundtrip():
         bi, bo, nb = ffd_layout(b)
         out = ffd_decode(ffd_encode(codes, b, bi, bo, nb), b, bi, bo, D)
         np.testing.assert_array_equal(out, codes)
+
+
+def test_orphaned_four_fix_is_optimal():
+    # Plain FFD packs {4,3,3,2,2,2} into 3 bytes; the orphaned-4 fix (move the lone
+    # 4 after the 3s) achieves the optimum of 2 (4+2+2 | 3+3+2).
+    b = np.array([4, 3, 3, 2, 2, 2], dtype=np.int64)
+    _, _, n_bytes = ffd_layout(b)
+    assert n_bytes == 2
+    # even count of 4s must NOT be perturbed (4+4 pairs perfectly).
+    b2 = np.array([4, 4, 3, 3, 2], dtype=np.int64)   # opt = 2: {4,4}|{3,3,2}
+    _, _, nb2 = ffd_layout(b2)
+    assert nb2 == 2
