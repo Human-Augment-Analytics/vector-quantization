@@ -178,7 +178,17 @@ class RankAwareQuantizer(BaseQuantizer):
             self.cb = [self._levels[int(b)] * scale[d] for d, b in enumerate(self.bits)]
         else:
             import saq
-            Y = Xc @ self.V                       # (N, D) projected coords
+            # Per-dim data-fit codebook (Lloyd/exact). Codebook quality saturates
+            # well before full N, so train on a fixed ~200k row sample — and
+            # project only that sample (not all N) — so both the build and the
+            # projection stay ~constant cost at scale (e.g. 53M). No-op at N<=
+            # sample (e.g. 200k), so smaller-scale results are unchanged.
+            CB_SAMPLE = 200_000
+            if Xc.shape[0] > CB_SAMPLE:
+                _idx = np.random.default_rng(0).choice(Xc.shape[0], CB_SAMPLE, replace=False)
+                Y = np.ascontiguousarray(Xc[_idx] @ self.V)   # (CB_SAMPLE, D)
+            else:
+                Y = Xc @ self.V                   # (N, D) projected coords
             self.cb = []
             for d, b in enumerate(self.bits):
                 b = int(b)
