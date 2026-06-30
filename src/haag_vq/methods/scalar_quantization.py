@@ -39,6 +39,17 @@ class ScalarQuantizer(BaseQuantizer):
         self.max = X.max(axis=0)
 
     def compress(self, X):
+        # Chunk over rows so we never build full-N float32 temporaries
+        # ((X-min), *scale, round each ~N*D*4 bytes; ~650GB transient at 53M -> OOM).
+        X = np.asarray(X)
+        N = X.shape[0]
+        CHUNK = 2_000_000
+        if N <= CHUNK:
+            return self._compress_block(X)
+        return np.concatenate([self._compress_block(X[s:s + CHUNK])
+                               for s in range(0, N, CHUNK)], axis=0)
+
+    def _compress_block(self, X):
         # Scale to [0, num_levels-1]
         scaled = (X - self.min) / (self.max - self.min + 1e-8)
         quantized = np.round(scaled * (self.num_levels - 1)).astype(self.dtype)
