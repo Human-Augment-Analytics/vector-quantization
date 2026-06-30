@@ -110,16 +110,25 @@ class RankAwareQuantizer(BaseQuantizer):
 
     # ------------------------------------------------------------------ fit
     def fit(self, X: np.ndarray) -> None:
-        X = np.asarray(X, dtype=np.float64)
+        X = np.asarray(X)                 # keep caller dtype (float32); never upcast all N
         N, D = X.shape
         self.D = int(D)
 
-        # 1. Center.
-        self.mu = X.mean(axis=0)
-        Xc = X - self.mu
+        # 1+2. One-pass chunked mean + covariance via float64 D-sized accumulators
+        #      (sum S, gram G = X^T X), so peak memory is ~one chunk rather than a
+        #      full float64 copy of X and Xc. At 53M a float64 (N,D) is ~430GB each;
+        #      the old `asarray(float64)` + `X - mu` OOMs. Cov identity is exact:
+        #        Cov = E[xx^T] - mu mu^T = G/N - mu mu^T.
+        CHUNK = 1_000_000
+        S = np.zeros(D, dtype=np.float64)
+        G = np.zeros((D, D), dtype=np.float64)
+        for s in range(0, N, CHUNK):
+            blk = np.asarray(X[s:s + CHUNK], dtype=np.float64)
+            S += blk.sum(axis=0)
+            G += blk.T @ blk
+        self.mu = S / N
+        C = G / N - np.outer(self.mu, self.mu)
 
-        # 2. PCA via covariance eigendecomposition, sorted DESCENDING.
-        C = (Xc.T @ Xc) / N
         w, Vt = np.linalg.eigh(C)        # ascending eigenvalues, columns = eigvecs
         order = np.argsort(w)[::-1]      # descending
         self.var = np.clip(w[order], 1e-12, None)
@@ -184,11 +193,13 @@ class RankAwareQuantizer(BaseQuantizer):
             # projection stay ~constant cost at scale (e.g. 53M). No-op at N<=
             # sample (e.g. 200k), so smaller-scale results are unchanged.
             CB_SAMPLE = 200_000
-            if Xc.shape[0] > CB_SAMPLE:
-                _idx = np.random.default_rng(0).choice(Xc.shape[0], CB_SAMPLE, replace=False)
-                Y = np.ascontiguousarray(Xc[_idx] @ self.V)   # (CB_SAMPLE, D)
+            N = X.shape[0]
+            if N > CB_SAMPLE:
+                _idx = np.random.default_rng(0).choice(N, CB_SAMPLE, replace=False)
+                Xs = np.asarray(X[_idx], dtype=np.float64) - self.mu
+                Y = np.ascontiguousarray(Xs @ self.V)         # (CB_SAMPLE, D)
             else:
-                Y = Xc @ self.V                   # (N, D) projected coords
+                Y = (np.asarray(X, dtype=np.float64) - self.mu) @ self.V   # (N, D)
             self.cb = []
             for d, b in enumerate(self.bits):
                 b = int(b)
@@ -232,13 +243,25 @@ class RankAwareQuantizer(BaseQuantizer):
     def compress(self, X: np.ndarray) -> np.ndarray:
         if self.V is None:
             raise RuntimeError("Quantizer must be fit before compress().")
-        X = np.asarray(X, dtype=np.float64)
+        X = np.asarray(X)                 # keep dtype; project per chunk in float64
         N, D = X.shape
         if D != self.D:
             raise ValueError(f"compress() got D={D}, but fit() saw D={self.D}")
 
-        Y = (X - self.mu) @ self.V  # (N, D) projected coords
+        # Chunk over rows so we never hold a full float64 (N,D) projection (~430GB
+        # at 53M). Each block's code bytes are independent and concatenable.
+        CHUNK = 1_000_000
+        if N <= CHUNK:
+            return self._compress_block((np.asarray(X, dtype=np.float64) - self.mu) @ self.V)
+        out = []
+        for s in range(0, N, CHUNK):
+            Y = (np.asarray(X[s:s + CHUNK], dtype=np.float64) - self.mu) @ self.V
+            out.append(self._compress_block(Y))
+        return np.concatenate(out, axis=0)
 
+    def _compress_block(self, Y: np.ndarray) -> np.ndarray:
+        """Quantize + pack one block of projected coords Y (Nb, D) -> code bytes."""
+        N, D = Y.shape
         if self.packing == "ffd":
             # Quantize each dim to its index, then pack via the FFD byte layout.
             code_mat = np.zeros((N, D), dtype=np.int64)
