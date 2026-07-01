@@ -23,16 +23,18 @@ def byte_cap_minus(width: int, offset: int, byte_cap: int = 8) -> int:
 
 
 def ffd_layout(bits_per_dim: np.ndarray, byte_cap: int = 8) -> Tuple[np.ndarray, np.ndarray, int]:
-    """Pack per-dim widths into bytes via First-Fit-Decreasing with the
-    orphaned-4 fix — optimal for byte_cap==8.
+    """Pack per-dim widths into bytes via First-Fit-Decreasing with the 4-fix —
+    optimal for byte_cap==8.
 
-    Plain FFD (cap 8) is suboptimal only when an odd number of width-4 dims leaves
-    a lone 4 that, placed before the 3s, grabs a 3 (4+3=7, wasting a bit) and breaks
-    the 3s' packing. Fix: if the count of width-4 dims is odd, demote one width-4 dim
-    to just after all the width-3 dims (i.e. before the width<=2 dims). This is a
-    single FFD pass, never worse than plain FFD, and produces an OPTIMAL packing:
-    verified exhaustively against the exact config-ILP for every item multiset with
-    bit-sum <= 50 (268,681 cases, 0 suboptimal) plus 50k random adversarial instances.
+    Plain FFD (cap 8) is suboptimal only around width-4 dims: 4 is the unique
+    self-complementary size (4+4=8=C), so an orphaned 4, placed before the 3s, grabs
+    a 3 (4+3=7, wasting a bit) and breaks the 3s' packing. Fix: move ALL width-4 dims
+    to just after the width-3 dims (before the width<=2 dims). This is a single FFD
+    pass, never worse than plain FFD, and produces an OPTIMAL packing: verified
+    exhaustively vs the exact config-ILP for every item multiset with bit-sum <= 50
+    (268,681 cases, 0 suboptimal) plus 50k random adversarial instances. (Moving all
+    4s is provably equivalent to demoting only the lone 4 — same bin count everywhere
+    — but needs no odd/even branch.)
 
     Args:
         bits_per_dim: (D,) int array, each in [0, byte_cap]. Zero-width dims skipped.
@@ -51,15 +53,15 @@ def ffd_layout(bits_per_dim: np.ndarray, byte_cap: int = 8) -> Tuple[np.ndarray,
     # FFD order: descending width, tie-break by index for determinism.
     order = sorted([d for d in range(D) if b[d] > 0], key=lambda d: (-b[d], d))
 
-    # Orphaned-4 fix (byte_cap==8 only): odd #width-4 dims -> move one width-4 dim
-    # to just after the width-3 dims (before the first width<=2 dim).
-    if byte_cap == 8:
+    # 4-fix (byte_cap==8 only): move ALL width-4 dims to just after the width-3 dims
+    # (before the first width<=2). Provably equivalent to demoting only the lone 4
+    # -- identical bin count on all 268,681 multisets with bit-sum <= 50 -- but with
+    # no parity branch. Optimal cap-8 packing; see ffd-orphaned-4-optimality note.
+    if byte_cap == 8 and any(b[d] == 4 for d in order):
         fours = [d for d in order if b[d] == 4]
-        if len(fours) % 2 == 1:
-            d4 = fours[-1]
-            order.remove(d4)
-            ins = next((i for i, d in enumerate(order) if b[d] <= 2), len(order))
-            order.insert(ins, d4)
+        rest = [d for d in order if b[d] != 4]
+        ins = next((i for i, d in enumerate(rest) if b[d] <= 2), len(rest))
+        order = rest[:ins] + fours + rest[ins:]
 
     # First-fit-decreasing placement, recording the byte layout.
     bin_remaining: List[int] = []  # remaining capacity per open byte
