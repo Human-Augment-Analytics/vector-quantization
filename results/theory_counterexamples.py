@@ -60,7 +60,10 @@ def mod_ffd(w, cap=CAP):
     return reserved + ffd([s for s, n in c.items() for _ in range(n)], cap)
 
 def best_ffd(w):
-    return min(ffd(w), mod_ffd(w))
+    # PRODUCTION packer (ffd_packing.ffd_layout: FFD + move-all-4s-after-3s, optimal for cap-8).
+    from haag_vq.methods.ffd_packing import ffd_layout
+    a = np.array([int(x) for x in w if x > 0], dtype=np.int64)
+    return int(ffd_layout(a)[2]) if a.size else 0
 
 
 def _draw_bins(ax, layout, x0, title, color):
@@ -107,13 +110,13 @@ def main():
     # ---- C3: does the fix suffice? ----
     ax = fig.add_subplot(1, 3, 3)
     N = 20000
-    rates = {"plain FFD": 0, "naive 4+2+2 fix": 0, "min(FFD, fix)": 0, "exact ILP": N}
+    rates = {"plain FFD": 0, "naive 4+2+2 fix": 0, "production (move 4s)": 0, "exact ILP": N}
     for _ in range(N):
         w = rng.integers(1, 9, int(rng.integers(2, 30))).tolist()
         o = opt(w)
         rates["plain FFD"] += ffd(w) == o
         rates["naive 4+2+2 fix"] += mod_ffd(w) == o
-        rates["min(FFD, fix)"] += best_ffd(w) == o
+        rates["production (move 4s)"] += best_ffd(w) == o
     labels = list(rates); vals = [100 * rates[k] / N for k in labels]
     colors = ["#1f77b4", "#d62728", "#ff7f0e", "#2ca02c"]
     ax.bar(labels, vals, color=colors)

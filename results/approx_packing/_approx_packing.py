@@ -110,8 +110,14 @@ def numpy_greedy(C, budget, max_bits):
 
 
 def ffd_bytes(widths, cap=8):
-    """First-fit-decreasing bin count for item sizes `widths` into bins of `cap`."""
-    bins = []  # remaining capacity per open bin
+    """Byte count for `widths` under the PRODUCTION packer (ffd_packing.ffd_layout:
+    FFD + move-all-4s-after-3s, optimal for cap==8), so the empirical packing study
+    matches the shipped algorithm. Plain-FFD fallback for cap != 8."""
+    if cap == 8:
+        from haag_vq.methods.ffd_packing import ffd_layout
+        w = np.array([int(x) for x in widths if x > 0], dtype=np.int64)
+        return int(ffd_layout(w)[2]) if w.size else 0
+    bins = []
     for w in sorted(widths, reverse=True):
         placed = False
         for i in range(len(bins)):

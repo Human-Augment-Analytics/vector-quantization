@@ -174,7 +174,13 @@ _gen(1, _CAP, [])
 
 
 def ffd_bytes(widths, cap=_CAP):
-    bins = []
+    # Use the PRODUCTION packer (ffd_packing.ffd_layout: FFD + move-all-4s-after-3s,
+    # optimal for cap==8) so theory figures match the shipped algorithm.
+    if cap == 8:
+        from haag_vq.methods.ffd_packing import ffd_layout
+        w = np.array([int(x) for x in widths if x > 0], dtype=np.int64)
+        return int(ffd_layout(w)[2]) if w.size else 0
+    bins = []  # plain-FFD fallback for cap != 8
     for w in sorted(widths, reverse=True):
         for i in range(len(bins)):
             if bins[i] >= w:
