@@ -169,6 +169,12 @@ vq-benchmark sweep --dataset dbpedia-100k --method saq \
 
 **Compression:** 8-32:1 | **Paper:** [Zhou et al., 2024](https://arxiv.org/abs/2410.06482)
 
+> **Engine:** the `saq` method loads a native quantization engine (`import saq`).
+> A vendored snapshot of that engine lives in [`external/saq/`](external/saq/) — see
+> [`external/saq/VENDORED.md`](external/saq/VENDORED.md) for provenance and build
+> instructions (AVX-512 CPU wheel, or `SAQ_BUILD_CUDA=ON` GPU wheel). Build it and
+> put it on `PYTHONPATH` (or install the wheel) before running the `saq` method.
+
 ### RaBitQ
 
 Bit-level quantization with FAISS.
