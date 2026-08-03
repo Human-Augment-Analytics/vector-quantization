@@ -22,17 +22,42 @@ not needed to reproduce results.
 This is a frozen copy. It does not track upstream SAQ; to refresh it, re-run
 `git archive` from the source repo at the desired commit and update this file.
 
-## Building
+## Prebuilt CPU wheel (convenience)
 
-The engine builds a Python extension (`saq` / `_saq_core`, plus `_saq_gpu` when CUDA
-is enabled). See `README.md` and `CMakeLists.txt` in this directory for the
-authoritative instructions. In brief:
+`dist/saq-0.2.0-cp310-cp310-manylinux_2_34_x86_64.whl` is a **self-contained CPU
+wheel** for running the `saq` method without compiling anything:
 
-- **CPU wheel:** requires an **AVX-512** toolchain (`-mavx512f -mfma`); the build
-  `SIGILL`s on non-AVX-512 (e.g. AMD) CPUs.
-- **GPU wheel:** configure with `SAQ_BUILD_CUDA=ON` and a CUDA toolchain
-  (`module load cuda/12.6.1` on PACE), setting `CMAKE_CUDA_ARCHITECTURES`
-  (e.g. `"80;86;89;90-real"` for A100/L40S/H100). Exposes the `GpuIVF` class.
+```bash
+pip install external/saq/dist/saq-0.2.0-cp310-cp310-manylinux_2_34_x86_64.whl
+```
 
-After building, make the module importable (install the wheel, or put the built
-`python/` on `PYTHONPATH`) so `import saq` resolves.
+It exposes the codebook builders (`build_codebook_lloyd`, `build_codebook_exact`,
+`build_codebook_dp`) and allocators used by the `saq` method — **no GPU** (no
+`GpuIVF`). It was built `SAQ_USE_FAISS=OFF` and repaired with `auditwheel`, so it
+bundles its `libglog`/`libfmt`/`libgomp` deps and needs no external libraries.
+
+**It works only where the tags match:** Linux **x86_64**, **CPython 3.10**,
+**glibc ≥ 2.34**, and a CPU with **AVX-512** (the extension `SIGILL`s otherwise).
+For any other Python version, CPU, or a GPU build, build from source below.
+
+## Building from source
+
+Builds a Python extension (`_saq_core`, plus `_saq_gpu` when CUDA is enabled). See
+this directory's `README.md`/`CMakeLists.txt` for the authoritative details. The
+key flags (matching how the project builds it):
+
+- **CPU wheel:**
+  ```bash
+  cmake -B build -DSAQ_BUILD_PYTHON=ON -DSAQ_USE_FAISS=OFF -DSAQ_BUILD_SAMPLES=OFF
+  cmake --build build --target _saq_core -j
+  cd python && pip wheel . --no-deps -w dist/     # then: auditwheel repair for portability
+  ```
+  `SAQ_USE_FAISS=OFF` uses the Eigen BDCSVD fallback for PCA/k-means — **do not**
+  link a conda `libfaiss` (ABI mismatch → `SIGABRT`). Requires an **AVX-512**
+  compiler (`-mfma`); the result `SIGILL`s on non-AVX-512 (e.g. AMD) CPUs.
+- **GPU wheel:** add `-DSAQ_BUILD_CUDA=ON` with a CUDA toolchain
+  (`module load cuda/12.6.1` on PACE) and `CMAKE_CUDA_ARCHITECTURES`
+  (e.g. `"80;86;89;90-real"` for A100/L40S/H100). Exposes `GpuIVF`.
+
+After building, install the wheel (or put the built `python/` on `PYTHONPATH`) so
+`import saq` resolves.
