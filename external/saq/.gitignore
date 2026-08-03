@@ -1,0 +1,86 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Build
+build/
+build_python/
+build*/
+**/_deps/
+bin/
+
+# MSVC debug artifacts
+*.pdb
+*.ilk
+
+# Python compiled modules
+*.pyd
+
+# Binary index files
+*.index
+
+# VS Code
+.vscode/
+.clang-format
+
+# Legacy C++ tests (old, need updating); Python tests live under tests/python/
+tests/*
+!tests/python/
+
+# GitHub
+.github/
+
+# Datasets
+data/datasets/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.conda/
+
+# Benchmark logs
+bench_*.txt
+
+# Windows NUL device artifact
+nul
+
+# Git worktrees
+.worktrees/
+
+# Reference repository (development reference only)
+reference/
+
+# Generated results
+results/
+
+# Scavenger tooling (local; .scavenger is a symlink to native-fs state)
+.scavenger
+.scavenger/
+.mcp.json
+.cursor/
