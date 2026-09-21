@@ -46,8 +46,7 @@ def build_faiss_quantizer(method: str, bpd: float, D: int) -> FaissQuantizerAdap
     raise ValueError(f"Unknown faiss method: {method!r}")
 
 
-SAQ_METHODS = ("saq_paper", "ours", "ours_exact", "rabitq", "lvq",
-               "rankaware", "perdim_mse", "rankaware_exact", "perdim_mse_exact")
+from haag_vq.benchmarks.method_registry_saq import SAQ_METHODS
 ALL_METHODS = FAISS_METHODS + SAQ_METHODS
 
 

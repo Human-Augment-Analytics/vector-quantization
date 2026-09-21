@@ -14,7 +14,14 @@ dependency in one path never breaks another.
 from __future__ import annotations
 
 SAQ_METHODS = ("saq_paper", "ours", "ours_exact", "rabitq", "lvq",
-               "rankaware", "perdim_mse", "rankaware_exact", "perdim_mse_exact")
+               "rankaware", "perdim_mse", "rankaware_exact", "perdim_mse_exact",
+               # joint-LP allocation + byte-budget-fair greedy ablation grid
+               # (allocator x alpha; ffd packing, Lloyd codebooks like rankaware)
+               "lp_mse", "lp_ra05", "lp_ra1",
+               "gbytes_mse", "gbytes_ra05", "gbytes_ra1")
+
+# alpha per ablation suffix; allocator per prefix (see build_saq_quantizer)
+_ABLATION_ALPHA = {"mse": 0.0, "ra05": 0.5, "ra1": 1.0}
 
 
 def build_saq_quantizer(method: str, bpd: float, D: int):
@@ -71,4 +78,16 @@ def build_saq_quantizer(method: str, bpd: float, D: int):
         from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
         from haag_vq.methods.rank_aware_quantization import RankAwareQuantizer
         return FaissQuantizerAdapter(RankAwareQuantizer(avg_bits=bpd, alpha=0.0, packing="ffd", codebook="exact"))
+    # Ablation grid: {lp, gbytes} x {mse: a=0, ra05: a=0.5, ra1: a=1}.
+    # 'lp' = joint allocation+packing LP at byte budget round(bpd*D/8) (needs scipy);
+    # 'gbytes' = byte-budget-fair greedy (largest bit budget whose FFD packing fits).
+    # Both use ffd packing + Lloyd codebooks for parity with rankaware/perdim_mse.
+    prefix, _, suffix = method.partition("_")
+    if prefix in ("lp", "gbytes") and suffix in _ABLATION_ALPHA:
+        from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
+        from haag_vq.methods.rank_aware_quantization import RankAwareQuantizer
+        allocator = "lp" if prefix == "lp" else "greedy_bytes"
+        return FaissQuantizerAdapter(RankAwareQuantizer(
+            avg_bits=bpd, alpha=_ABLATION_ALPHA[suffix], packing="ffd",
+            codebook="lloyd", allocator=allocator))
     raise ValueError(f"Unknown SAQ-study method: {method!r}")

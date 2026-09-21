@@ -1,0 +1,15 @@
+# Minimal deps for the PACE recall benchmark / LP-allocation ablation path
+# (scripts/run_full_benchmark.py + haag_vq.benchmarks + prep_dataset.py).
+# On Phoenix: check the shared default_venv first; install only what's missing
+# into a per-user overlay:  pip install --target $PYLIBS -r requirements-pace.txt
+#
+# Additionally required (not on PyPI): the SAQ engine wheel for Lloyd/exact
+# codebooks —  pip install external/saq/dist/saq-*.whl  (manylinux cp310; if the
+# venv python isn't 3.10, rebuild the CPU wheel — see the phoenix bundle README).
+numpy
+pandas
+scipy           # LP allocator (HiGHS via scipy.optimize.linprog/milp)
+pyyaml          # haag_vq.benchmarks.study_config import chain
+faiss-cpu       # exact-search recall evaluation
+matplotlib      # pareto plots (merge step)
+huggingface_hub # dataset prep only (raw MSMARCO shard download)

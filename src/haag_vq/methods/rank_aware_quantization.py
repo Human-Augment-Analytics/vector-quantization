@@ -74,13 +74,24 @@ class RankAwareQuantizer(BaseQuantizer):
 
     def __init__(self, avg_bits: float, alpha: float = 1.0,
                  max_bits: int = 8, seed: int = 0, packing: str = "dense",
-                 codebook: str = "gaussian"):
+                 codebook: str = "gaussian", allocator: str = "greedy"):
         if max_bits < 1 or max_bits > 8:
             raise ValueError("max_bits must be in [1, 8]")
         if packing not in ("dense", "ffd"):
             raise ValueError("packing must be 'dense' or 'ffd'")
         if codebook not in ("gaussian", "lloyd", "exact"):
             raise ValueError("codebook must be 'gaussian', 'lloyd', or 'exact'")
+        # allocator: 'greedy' = bit-budget greedy (avg_bits * D bits, packed size
+        # falls where it falls); 'greedy_bytes' = same greedy, largest bit budget
+        # whose FFD-packed size fits round(avg_bits*D/8) bytes; 'lp' = joint
+        # allocation+packing LP at that byte budget (lp_alloc.lp_joint_alloc).
+        if allocator not in ("greedy", "greedy_bytes", "lp"):
+            raise ValueError("allocator must be 'greedy', 'greedy_bytes', or 'lp'")
+        if allocator in ("greedy_bytes", "lp") and packing != "ffd":
+            raise ValueError(f"allocator='{allocator}' requires packing='ffd'")
+        if allocator == "lp" and max_bits != 8:
+            raise ValueError("allocator='lp' requires max_bits == 8")
+        self.allocator = allocator
         # codebook: per-dim centroids source (allocation + packing held fixed so this
         # isolates the codebook's effect). 'gaussian' = analytic Lloyd-Max(N(0,1))*sigma;
         # 'lloyd'/'exact' = data-fit on the projected column via the SAQ engine builders.
@@ -146,39 +157,82 @@ class RankAwareQuantizer(BaseQuantizer):
         Dg[0] = 1.0  # enforce exact normalization for b=0
         self._Dg = Dg
 
-        # 4. Rank-aware greedy allocation.
+        # 4. Bit allocation: rank-aware greedy, byte-constrained greedy, or the
+        #    joint allocation+packing LP. All optimize the same weighted cost
+        #    var^(1+alpha) * Dg[b]  (marginal gain var^(1+alpha) * (Dg[b]-Dg[b+1])).
         total = int(round(self.avg_bits * D))
-        bits = np.zeros(D, dtype=np.int64)
-
-        # marginal weighted gain of dim d going from bits[d] -> bits[d]+1:
-        #   var^alpha * (mse_d(b) - mse_d(b+1))
-        #     = var^alpha * var * (Dg[b] - Dg[b+1])
-        #     = var^(1+alpha) * (Dg[b] - Dg[b+1])
+        byte_budget = int(round(self.avg_bits * D / 8))
         var_pow = self.var ** (1.0 + self.alpha)  # (D,)
 
-        def gain_at(b_arr):
-            # delta MSE per extra bit for current level b_arr (set to -inf when
-            # at the cap so those dims are never chosen).
+        def greedy_sequence(n_steps):
+            """Run greedy for n_steps bumps; return (bits, bump order)."""
+            b = np.zeros(D, dtype=np.int64)
+            seq = np.empty(min(n_steps, D * self.max_bits), dtype=np.int64)
             g = np.full(D, -np.inf, dtype=np.float64)
-            ok = b_arr < self.max_bits
-            db = b_arr[ok]
-            g[ok] = var_pow[ok] * (Dg[db] - Dg[db + 1])
-            return g
+            ok = b < self.max_bits
+            g[ok] = var_pow[ok] * (Dg[b[ok]] - Dg[b[ok] + 1])
+            n = 0
+            for _ in range(len(seq)):
+                d_star = int(np.argmax(g))
+                if not np.isfinite(g[d_star]):
+                    break  # all dims at cap
+                b[d_star] += 1
+                seq[n] = d_star; n += 1
+                if b[d_star] < self.max_bits:
+                    g[d_star] = var_pow[d_star] * (Dg[b[d_star]] - Dg[b[d_star] + 1])
+                else:
+                    g[d_star] = -np.inf
+            return b, seq[:n]
 
-        gain = gain_at(bits)
-        for _ in range(total):
-            d_star = int(np.argmax(gain))
-            if not np.isfinite(gain[d_star]):
-                break  # all dims at cap; budget can't be fully spent
-            bits[d_star] += 1
-            # recompute only the touched dim's gain
-            if bits[d_star] < self.max_bits:
-                gain[d_star] = var_pow[d_star] * (Dg[bits[d_star]] - Dg[bits[d_star] + 1])
-            else:
-                gain[d_star] = -np.inf
-
-        self.bits = bits.astype(np.int64)
-        assert self.bits.sum() <= total
+        if self.allocator == "lp":
+            from .lp_alloc import lp_joint_alloc
+            cost = var_pow[:, None] * Dg[None, :]     # (D, 9) weighted MSE
+            B = byte_budget
+            while B > 0:
+                bits, _ = lp_joint_alloc(cost, B)
+                if int(ffd_layout(bits)[2]) <= byte_budget:
+                    break
+                B -= 1  # rounding overshoot: tighten and retry (rare, <= 2 iters)
+            # Top-up: the tighten-and-retry can strand capacity (at small budgets
+            # a whole byte, e.g. SIFT 4bpd: 63/64 bytes used). Spend any spare
+            # bytes on the best-marginal-gain bits that still fit the budget.
+            while True:
+                order = np.argsort(-(var_pow * np.where(bits < self.max_bits,
+                                     Dg[bits] - Dg[np.minimum(bits + 1, self.max_bits)], -np.inf)))
+                added = False
+                for d_star in order:
+                    if bits[d_star] >= self.max_bits:
+                        break  # sorted: everything after is capped too
+                    bits[d_star] += 1
+                    if int(ffd_layout(bits)[2]) <= byte_budget:
+                        added = True
+                        break
+                    bits[d_star] -= 1
+                if not added:
+                    break
+            self.bits = bits
+        elif self.allocator == "greedy_bytes":
+            # Greedy is nested (alloc at T is a prefix of T+1), so compute the
+            # full bump sequence once and binary-search the packed-size cutoff.
+            _, seq = greedy_sequence(D * self.max_bits)
+            def bits_at(T):
+                b = np.zeros(D, dtype=np.int64)
+                np.add.at(b, seq[:T], 1)
+                return b
+            lo, hi = 0, len(seq)
+            best = np.zeros(D, dtype=np.int64)
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                b = bits_at(mid)
+                if int(ffd_layout(b)[2]) <= byte_budget:
+                    best = b; lo = mid + 1
+                else:
+                    hi = mid - 1
+            self.bits = best
+        else:
+            bits, _ = greedy_sequence(total)
+            self.bits = bits
+            assert self.bits.sum() <= total
 
         # 5. Per-dim codebooks. 'gaussian' = analytic levels scaled by sqrt(var).
         #    'lloyd'/'exact' = data-fit centroids on the projected column at bits[d].
