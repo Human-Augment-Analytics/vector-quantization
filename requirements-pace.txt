@@ -8,8 +8,8 @@
 # venv python isn't 3.10, rebuild the CPU wheel — see the phoenix bundle README).
 numpy
 pandas
-scipy           # LP allocator (HiGHS via scipy.optimize.linprog/milp)
-pyyaml          # haag_vq.benchmarks.study_config import chain
-faiss-cpu       # exact-search recall evaluation
-matplotlib      # pareto plots (merge step)
-huggingface_hub # dataset prep only (raw MSMARCO shard download)
+scipy>=1.9  # LP allocator needs the HiGHS-backed linprog/milp (method="highs-ds")
+pyyaml
+faiss-cpu
+matplotlib
+huggingface_hub
