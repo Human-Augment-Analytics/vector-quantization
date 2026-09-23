@@ -38,12 +38,24 @@ class FaissQuantizerAdapter:
         self._codes: Optional[np.ndarray] = None
         self._n = 0
 
+    # Row-chunked compress: several wrapped quantizers (rabitq, lvq) hold
+    # multiple full-size float64 temporaries per compress() call — O(7*N*D*8)
+    # bytes, which OOMs 128 GB nodes at N=2M. Compress is row-wise once fit()
+    # has run (codebooks/rotations fixed), so chunking is bit-exact.
+    _COMPRESS_CHUNK = 200_000
+
     def fit(self, X: np.ndarray) -> None:
         X = np.ascontiguousarray(X, dtype=np.float32)
         self._q.fit(X)
-        codes = self._q.compress(X)   # may raise; leave prior state intact
+        n = X.shape[0]
+        if n <= self._COMPRESS_CHUNK:
+            codes = self._q.compress(X)   # may raise; leave prior state intact
+        else:
+            parts = [self._q.compress(X[s:s + self._COMPRESS_CHUNK])
+                     for s in range(0, n, self._COMPRESS_CHUNK)]
+            codes = np.concatenate(parts, axis=0)
         self._codes = codes
-        self._n = X.shape[0]
+        self._n = n
 
     def reconstruct(self, ids: np.ndarray) -> np.ndarray:
         if self._codes is None:
