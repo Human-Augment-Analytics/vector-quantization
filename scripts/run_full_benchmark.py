@@ -181,8 +181,14 @@ def main():
             q.fit(X)
             t_fit = time.time() - t_start
             print(f"  [{method} bpd={bpd}] fit done in {t_fit:.1f}s; building index...", flush=True)
-            index = build_scaled_ip_index(q.reconstruct, n=n, d=D, norms=norms, chunk=CHUNK_SIZE)
-            _, ids = search_index(index, Q, k=max(KS))
+            if os.environ.get("VQ_STREAM_EVAL") == "1":
+                from haag_vq.benchmarks.exact_search import stream_search_scaled_ip
+                _, ids = stream_search_scaled_ip(q.reconstruct, n=n, d=D, norms=norms,
+                                                 Q=Q, k=max(KS), chunk=CHUNK_SIZE)
+                index = None
+            else:
+                index = build_scaled_ip_index(q.reconstruct, n=n, d=D, norms=norms, chunk=CHUNK_SIZE)
+                _, ids = search_index(index, Q, k=max(KS))
             rec = recall_at_ks(ids, gt, ks=KS)
             mse = reconstruction_mse(X, q.reconstruct, sample_ids, chunk=CHUNK_SIZE)
             code_bytes = q.code_bytes()

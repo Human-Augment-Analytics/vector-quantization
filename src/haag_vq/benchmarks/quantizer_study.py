@@ -93,6 +93,16 @@ def run_study_arrays(
 
 
 def _load_fvecs(path: str) -> np.ndarray:
+    # VQ_MMAP=1: return a memmap view (rows are [d][d floats]; column 0 dropped)
+    # instead of copying the file into RAM — required at 53M (217 GB). All
+    # consumers access X row-chunk-wise, which copies only the touched rows.
+    import os
+    if os.environ.get("VQ_MMAP") == "1":
+        mm = np.memmap(path, dtype=np.float32, mode="r")
+        if mm.size == 0:
+            raise ValueError(f"_load_fvecs: file is empty: {path}")
+        d = int(mm[:1].view(np.int32)[0])
+        return mm.reshape(-1, d + 1)[:, 1:]
     with open(path, "rb") as f:
         data = np.frombuffer(f.read(), dtype=np.float32)
     if data.size == 0:

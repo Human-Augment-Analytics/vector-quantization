@@ -130,20 +130,33 @@ class RankAwareQuantizer(BaseQuantizer):
         #      full float64 copy of X and Xc. At 53M a float64 (N,D) is ~430GB each;
         #      the old `asarray(float64)` + `X - mu` OOMs. Cov identity is exact:
         #        Cov = E[xx^T] - mu mu^T = G/N - mu mu^T.
-        CHUNK = 1_000_000
-        S = np.zeros(D, dtype=np.float64)
-        G = np.zeros((D, D), dtype=np.float64)
-        for s in range(0, N, CHUNK):
-            blk = np.asarray(X[s:s + CHUNK], dtype=np.float64)
-            S += blk.sum(axis=0)
-            G += blk.T @ blk
-        self.mu = S / N
-        C = G / N - np.outer(self.mu, self.mu)
+        #      VQ_PCA_CACHE: load a precomputed EXACT (mu, V, var) for this dataset
+        #      (scripts/pca_moments.py) instead of recomputing it per cell — at 53M
+        #      the covariance is ~1.1e17 FLOPs, identical across every cell.
+        import os
+        _cache = os.environ.get("VQ_PCA_CACHE")
+        if _cache and os.path.exists(_cache):
+            _z = np.load(_cache)
+            self.mu = np.asarray(_z["mu"], dtype=np.float64)
+            self.V = np.asarray(_z["V"], dtype=np.float64)
+            self.var = np.asarray(_z["var"], dtype=np.float64)
+            assert self.V.shape == (D, D), \
+                f"PCA cache dim {self.V.shape} != data dim {D}"
+        else:
+            CHUNK = 1_000_000
+            S = np.zeros(D, dtype=np.float64)
+            G = np.zeros((D, D), dtype=np.float64)
+            for s in range(0, N, CHUNK):
+                blk = np.asarray(X[s:s + CHUNK], dtype=np.float64)
+                S += blk.sum(axis=0)
+                G += blk.T @ blk
+            self.mu = S / N
+            C = G / N - np.outer(self.mu, self.mu)
 
-        w, Vt = np.linalg.eigh(C)        # ascending eigenvalues, columns = eigvecs
-        order = np.argsort(w)[::-1]      # descending
-        self.var = np.clip(w[order], 1e-12, None)
-        self.V = Vt[:, order]            # (D, D), columns = components
+            w, Vt = np.linalg.eigh(C)        # ascending eigenvalues, columns = eigvecs
+            order = np.argsort(w)[::-1]      # descending
+            self.var = np.clip(w[order], 1e-12, None)
+            self.V = Vt[:, order]            # (D, D), columns = components
 
         # 3. Per-dim Gaussian-optimal scalar codebooks for b = 0..max_bits.
         #    levels[b]: centroids for a b-bit N(0,1) quantizer (2^b levels).
