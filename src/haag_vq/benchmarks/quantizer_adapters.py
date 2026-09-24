@@ -45,7 +45,12 @@ class FaissQuantizerAdapter:
     _COMPRESS_CHUNK = 200_000
 
     def fit(self, X: np.ndarray) -> None:
-        X = np.ascontiguousarray(X, dtype=np.float32)
+        # A memmapped corpus (or a view into one) must NOT be materialized
+        # here — that's a 217 GB allocation at 53M. The wrapped quantizers
+        # access X row-chunk-wise and copy only the touched rows.
+        mapped = isinstance(X, np.memmap) or isinstance(getattr(X, "base", None), np.memmap)
+        if not mapped:
+            X = np.ascontiguousarray(X, dtype=np.float32)
         self._q.fit(X)
         n = X.shape[0]
         if n <= self._COMPRESS_CHUNK:
