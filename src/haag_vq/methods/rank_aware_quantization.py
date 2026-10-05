@@ -259,7 +259,8 @@ class RankAwareQuantizer(BaseQuantizer):
             # project only that sample (not all N) — so both the build and the
             # projection stay ~constant cost at scale (e.g. 53M). No-op at N<=
             # sample (e.g. 200k), so smaller-scale results are unchanged.
-            CB_SAMPLE = 200_000
+            # VQ_CB_SAMPLE overrides for the finite-data sweep (claim 1).
+            CB_SAMPLE = int(os.environ.get("VQ_CB_SAMPLE", "200000"))
             N = X.shape[0]
             if N > CB_SAMPLE:
                 _idx = np.random.default_rng(0).choice(N, CB_SAMPLE, replace=False)

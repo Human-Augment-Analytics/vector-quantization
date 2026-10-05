@@ -47,6 +47,14 @@ def main():
     D = X.shape[1]
     assert max(NS) <= X.shape[0]
 
+    # Warm the page cache over the full timed range BEFORE any timing: the
+    # first fit otherwise pays the cold mmap page-in (observed ~300 s for
+    # 2M x 1024 from CEDAR, dwarfing every method's actual cost).
+    t0 = time.time()
+    for lo in range(0, max(NS), 100_000):
+        _ = np.asarray(X[lo: lo + 100_000]).sum()
+    print(f"warmup pass over {max(NS)} rows: {time.time()-t0:.1f}s", flush=True)
+
     rows = []
     for method in METHODS:
         for bpd in BPDS:
