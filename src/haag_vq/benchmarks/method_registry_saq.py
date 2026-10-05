@@ -18,6 +18,9 @@ SAQ_METHODS = ("saq_paper", "ours", "ours_exact", "rabitq", "lvq",
                # joint-LP allocation + byte-budget-fair greedy ablation grid
                # (allocator x alpha; ffd packing, Lloyd codebooks like rankaware)
                "lp_mse", "lp_ra05", "lp_ra1", "lp_q",
+               # lp_q_emp = the PAPER METHOD, literally: query-covariance
+               # weights x measured per-dim k-means losses (no scaling law)
+               "lp_q_emp",
                "gbytes_mse", "gbytes_ra05", "gbytes_ra1")
 
 # alpha per ablation suffix; allocator per prefix (see build_saq_quantizer)
@@ -82,6 +85,12 @@ def build_saq_quantizer(method: str, bpd: float, D: int):
     # 'lp' = joint allocation+packing LP at byte budget round(bpd*D/8) (needs scipy);
     # 'gbytes' = byte-budget-fair greedy (largest bit budget whose FFD packing fits).
     # Both use ffd packing + Lloyd codebooks for parity with rankaware/perdim_mse.
+    if method == "lp_q_emp":  # the paper method, literally (pseudocode f_{j,l})
+        from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
+        from haag_vq.methods.rank_aware_quantization import RankAwareQuantizer
+        return FaissQuantizerAdapter(RankAwareQuantizer(
+            avg_bits=bpd, packing="ffd", codebook="lloyd", allocator="lp",
+            weighting="query", cost_source="empirical"))
     prefix, _, suffix = method.partition("_")
     if prefix in ("lp", "gbytes") and (suffix in _ABLATION_ALPHA or suffix == "q"):
         from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
@@ -92,5 +101,6 @@ def build_saq_quantizer(method: str, bpd: float, D: int):
         kw = (dict(weighting="query", alpha=1.0) if suffix == "q"
               else dict(alpha=_ABLATION_ALPHA[suffix]))
         return FaissQuantizerAdapter(RankAwareQuantizer(
-            avg_bits=bpd, packing="ffd", codebook="lloyd", allocator=allocator, **kw))
+            avg_bits=bpd, packing="ffd", codebook="lloyd", allocator=allocator,
+            cost_source="scaling", **kw))
     raise ValueError(f"Unknown SAQ-study method: {method!r}")

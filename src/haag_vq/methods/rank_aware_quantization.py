@@ -75,7 +75,7 @@ class RankAwareQuantizer(BaseQuantizer):
     def __init__(self, avg_bits: float, alpha: float = 1.0,
                  max_bits: int = 8, seed: int = 0, packing: str = "dense",
                  codebook: str = "gaussian", allocator: str = "greedy",
-                 weighting: str = "var"):
+                 weighting: str = "var", cost_source: str | None = None):
         if max_bits < 1 or max_bits > 8:
             raise ValueError("max_bits must be in [1, 8]")
         # weighting: 'var' = w_j = var_j^alpha (the eigenvalue proxy for query
@@ -85,6 +85,12 @@ class RankAwareQuantizer(BaseQuantizer):
         if weighting not in ("var", "query"):
             raise ValueError("weighting must be 'var' or 'query'")
         self.weighting = weighting
+        # cost_source: 'scaling' = w_j * var_j * Dg(l); 'empirical' = w_j *
+        # measured per-dim Lloyd losses (the paper's literal f_{j,l}; lp
+        # allocator only). None = defer to VQ_COST_SOURCE env (default scaling).
+        if cost_source not in (None, "scaling", "empirical"):
+            raise ValueError("cost_source must be 'scaling' or 'empirical'")
+        self.cost_source = cost_source
         if packing not in ("dense", "ffd"):
             raise ValueError("packing must be 'dense' or 'ffd'")
         if codebook not in ("gaussian", "lloyd", "exact"):
@@ -223,8 +229,8 @@ class RankAwareQuantizer(BaseQuantizer):
         # codebook sample — the paper pseudocode's f_{j,l}, for auditing the
         # scaling law. Weight w_j still multiplies either table (var_pow = w*var).
         emp = None
-        if (os.environ.get("VQ_COST_SOURCE", "scaling") == "empirical"
-                and self.allocator == "lp"):
+        _src = self.cost_source or os.environ.get("VQ_COST_SOURCE", "scaling")
+        if _src == "empirical" and self.allocator == "lp":
             _rng = np.random.default_rng(0)
             _ns = min(int(os.environ.get("VQ_CB_SAMPLE", "200000")), X.shape[0])
             _idx = (np.sort(_rng.choice(X.shape[0], _ns, replace=False))
