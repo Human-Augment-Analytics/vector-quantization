@@ -17,7 +17,7 @@ SAQ_METHODS = ("saq_paper", "ours", "ours_exact", "rabitq", "lvq",
                "rankaware", "perdim_mse", "rankaware_exact", "perdim_mse_exact",
                # joint-LP allocation + byte-budget-fair greedy ablation grid
                # (allocator x alpha; ffd packing, Lloyd codebooks like rankaware)
-               "lp_mse", "lp_ra05", "lp_ra1",
+               "lp_mse", "lp_ra05", "lp_ra1", "lp_q",
                "gbytes_mse", "gbytes_ra05", "gbytes_ra1")
 
 # alpha per ablation suffix; allocator per prefix (see build_saq_quantizer)
@@ -83,11 +83,14 @@ def build_saq_quantizer(method: str, bpd: float, D: int):
     # 'gbytes' = byte-budget-fair greedy (largest bit budget whose FFD packing fits).
     # Both use ffd packing + Lloyd codebooks for parity with rankaware/perdim_mse.
     prefix, _, suffix = method.partition("_")
-    if prefix in ("lp", "gbytes") and suffix in _ABLATION_ALPHA:
+    if prefix in ("lp", "gbytes") and (suffix in _ABLATION_ALPHA or suffix == "q"):
         from haag_vq.benchmarks.quantizer_adapters import FaissQuantizerAdapter
         from haag_vq.methods.rank_aware_quantization import RankAwareQuantizer
         allocator = "lp" if prefix == "lp" else "greedy_bytes"
+        # suffix 'q' = measured query-covariance weights (paper's U^T Q U
+        # diagonal) instead of the var^alpha eigenvalue proxy.
+        kw = (dict(weighting="query", alpha=1.0) if suffix == "q"
+              else dict(alpha=_ABLATION_ALPHA[suffix]))
         return FaissQuantizerAdapter(RankAwareQuantizer(
-            avg_bits=bpd, alpha=_ABLATION_ALPHA[suffix], packing="ffd",
-            codebook="lloyd", allocator=allocator))
+            avg_bits=bpd, packing="ffd", codebook="lloyd", allocator=allocator, **kw))
     raise ValueError(f"Unknown SAQ-study method: {method!r}")

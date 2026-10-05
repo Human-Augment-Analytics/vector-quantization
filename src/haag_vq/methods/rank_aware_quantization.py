@@ -74,9 +74,17 @@ class RankAwareQuantizer(BaseQuantizer):
 
     def __init__(self, avg_bits: float, alpha: float = 1.0,
                  max_bits: int = 8, seed: int = 0, packing: str = "dense",
-                 codebook: str = "gaussian", allocator: str = "greedy"):
+                 codebook: str = "gaussian", allocator: str = "greedy",
+                 weighting: str = "var"):
         if max_bits < 1 or max_bits > 8:
             raise ValueError("max_bits must be in [1, 8]")
+        # weighting: 'var' = w_j = var_j^alpha (the eigenvalue proxy for query
+        # energy); 'query' = w_j = E[(V^T q)_j^2] measured on an uncentered
+        # corpus sample — the paper's U^T Q U diagonal, including the mean
+        # floor the proxy misses in tail dims. alpha is ignored for 'query'.
+        if weighting not in ("var", "query"):
+            raise ValueError("weighting must be 'var' or 'query'")
+        self.weighting = weighting
         if packing not in ("dense", "ffd"):
             raise ValueError("packing must be 'dense' or 'ffd'")
         if codebook not in ("gaussian", "lloyd", "exact"):
@@ -175,7 +183,20 @@ class RankAwareQuantizer(BaseQuantizer):
         #    var^(1+alpha) * Dg[b]  (marginal gain var^(1+alpha) * (Dg[b]-Dg[b+1])).
         total = int(round(self.avg_bits * D))
         byte_budget = int(round(self.avg_bits * D / 8))
-        var_pow = self.var ** (1.0 + self.alpha)  # (D,)
+        if self.weighting == "query":
+            # Measured query-covariance weights: queries are corpus-distributed,
+            # so estimate E[q~_j^2] = E[(V^T q)_j^2] on an UNCENTERED corpus
+            # sample = lambda_j + (V^T mu)_j^2 (the mean floor dominates tail
+            # dims where lambda_j -> 0; the var^alpha proxy misses it).
+            _rng = np.random.default_rng(1)
+            _ns = min(50_000, X.shape[0])
+            _idx = (np.sort(_rng.choice(X.shape[0], _ns, replace=False))
+                    if X.shape[0] > _ns else np.arange(X.shape[0]))
+            _Yq = np.asarray(X[_idx], dtype=np.float64) @ self.V
+            w = (_Yq ** 2).mean(axis=0)
+            var_pow = w * self.var                    # weight x unweighted mse scale
+        else:
+            var_pow = self.var ** (1.0 + self.alpha)  # (D,)
 
         def greedy_sequence(n_steps):
             """Run greedy for n_steps bumps; return (bits, bump order)."""
