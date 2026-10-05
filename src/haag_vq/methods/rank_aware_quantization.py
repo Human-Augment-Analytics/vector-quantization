@@ -218,9 +218,57 @@ class RankAwareQuantizer(BaseQuantizer):
                     g[d_star] = -np.inf
             return b, seq[:n]
 
+        # VQ_COST_SOURCE=empirical (lp allocator only): replace the Gaussian
+        # scaling-law table var*Dg with MEASURED per-dim Lloyd losses on the
+        # codebook sample — the paper pseudocode's f_{j,l}, for auditing the
+        # scaling law. Weight w_j still multiplies either table (var_pow = w*var).
+        emp = None
+        if (os.environ.get("VQ_COST_SOURCE", "scaling") == "empirical"
+                and self.allocator == "lp"):
+            _rng = np.random.default_rng(0)
+            _ns = min(int(os.environ.get("VQ_CB_SAMPLE", "200000")), X.shape[0])
+            _idx = (np.sort(_rng.choice(X.shape[0], _ns, replace=False))
+                    if X.shape[0] > _ns else np.arange(X.shape[0]))
+            Yc = (np.asarray(X[_idx], dtype=np.float64) - self.mu) @ self.V
+            emp = np.empty((D, self.max_bits + 1))
+            for j in range(D):
+                col = np.sort(Yc[:, j])
+                cs = np.concatenate(([0.0], np.cumsum(col)))
+                cs2 = np.concatenate(([0.0], np.cumsum(col * col)))
+                n_s = len(col)
+                emp[j, 0] = cs2[-1] / n_s - (cs[-1] / n_s) ** 2
+                for l in range(1, self.max_bits + 1):
+                    k = 2 ** l
+                    q = (np.arange(k) + 0.5) / k
+                    c = col[np.minimum((q * n_s).astype(int), n_s - 1)].copy()
+                    for _ in range(100_000):
+                        bnd = 0.5 * (c[:-1] + c[1:])
+                        ii = np.searchsorted(col, bnd)
+                        lo = np.concatenate(([0], ii)); hi = np.concatenate((ii, [n_s]))
+                        cnt = hi - lo
+                        new = np.sort(np.where(cnt > 0,
+                                               (cs[hi] - cs[lo]) / np.maximum(cnt, 1), c))
+                        if float(np.max(np.abs(new - c))) < 1e-10:
+                            c = new; break
+                        c = new
+                    bnd = 0.5 * (c[:-1] + c[1:])
+                    ii = np.searchsorted(col, bnd)
+                    lo = np.concatenate(([0], ii)); hi = np.concatenate((ii, [n_s]))
+                    cnt = hi - lo
+                    emp[j, l] = float(np.sum((cs2[hi] - cs2[lo])
+                                             - 2 * c * (cs[hi] - cs[lo])
+                                             + c * c * cnt)) / n_s
+            print(f"[cost-source] empirical table built on {_ns} rows "
+                  f"(f[:,0] vs var corr: "
+                  f"{np.corrcoef(emp[:, 0], self.var)[0, 1]:.5f})")
+
         if self.allocator == "lp":
             from .lp_alloc import lp_joint_alloc
-            cost = var_pow[:, None] * Dg[None, :]     # (D, 9) weighted MSE
+            w_only = var_pow / np.maximum(self.var, 1e-300)   # w_j alone
+            if emp is not None:
+                cost = w_only[:, None] * emp                  # measured f_{j,l}
+            else:
+                cost = var_pow[:, None] * Dg[None, :]         # (D, 9) weighted MSE
             B = byte_budget
             while B > 0:
                 bits, _ = lp_joint_alloc(cost, B)
@@ -231,8 +279,12 @@ class RankAwareQuantizer(BaseQuantizer):
             # a whole byte, e.g. SIFT 4bpd: 63/64 bytes used). Spend any spare
             # bytes on the best-marginal-gain bits that still fit the budget.
             while True:
-                order = np.argsort(-(var_pow * np.where(bits < self.max_bits,
-                                     Dg[bits] - Dg[np.minimum(bits + 1, self.max_bits)], -np.inf)))
+                _nb = np.minimum(bits + 1, self.max_bits)
+                if emp is not None:
+                    _g = w_only * (emp[np.arange(D), bits] - emp[np.arange(D), _nb])
+                else:
+                    _g = var_pow * (Dg[bits] - Dg[_nb])
+                order = np.argsort(-np.where(bits < self.max_bits, _g, -np.inf))
                 added = False
                 for d_star in order:
                     if bits[d_star] >= self.max_bits:
