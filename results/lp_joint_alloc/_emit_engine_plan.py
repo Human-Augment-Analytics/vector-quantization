@@ -147,6 +147,14 @@ def main() -> None:
     ap.add_argument("--alpha", default=1.0, type=float)
     ap.add_argument("--max-bits", default=8, type=int)
     ap.add_argument("--seed", default=0, type=int, help="Dg table seed (harness default 0)")
+    ap.add_argument("--cost-source", default="scaling", choices=["scaling", "empirical"],
+                    help="scaling = w*var*Dg; empirical = w x measured per-dim "
+                         "Lloyd losses on a sample of vectors_pca (paper-literal)")
+    ap.add_argument("--weights", default="alpha", choices=["alpha", "query"],
+                    help="alpha = var^alpha (default); query = per-dim second "
+                         "moment of queries_pca (engine-space query energy)")
+    ap.add_argument("--sample-n", default=200_000, type=int,
+                    help="rows sampled from vectors_pca for empirical costs")
     ap.add_argument("--plan-only", action="store_true",
                     help="Write plan.txt + perm_dims.txt only; skip the permuted "
                          "dataset copies. Refuses a non-identity permutation (the "
@@ -169,9 +177,57 @@ def main() -> None:
         _, Dg[b] = _lloyd_1d_normal(2 ** b, seed=args.seed + b)
     Dg[0] = 1.0
 
-    var_pow = var ** (1.0 + args.alpha)
-    block_w = var_pow.reshape(nb, BLOCK).sum(axis=1)          # (nb,)
-    block_cost = block_w[:, None] * Dg[None, :]               # (nb, max_bits+1)
+    def _read_sample(path: Path, max_rows: int) -> np.ndarray:
+        d = int(np.fromfile(path, dtype=np.int32, count=1)[0])
+        assert d == D
+        n_rows = path.stat().st_size // (4 * (d + 1))
+        take = min(max_rows, n_rows)
+        raw = np.fromfile(path, dtype=np.float32, count=take * (d + 1))
+        return raw.reshape(take, d + 1)[:, 1:].astype(np.float64)
+
+    # Per-dim weights w_j
+    if args.weights == "query":
+        Qs = _read_sample(src / "queries_pca.fvecs", 50_000)
+        w = (Qs ** 2).mean(axis=0)
+        print(f"weights=query from {Qs.shape[0]} queries")
+    else:
+        w = var ** args.alpha
+
+    # Per-dim unweighted distortion curves f_d(l)
+    if args.cost_source == "empirical":
+        Xs = _read_sample(src / "vectors_pca.fvecs", args.sample_n)
+        print(f"empirical costs from {Xs.shape[0]} rows")
+        f = np.empty((D, args.max_bits + 1))
+        for j in range(D):
+            col = np.sort(Xs[:, j])
+            cs = np.concatenate(([0.0], np.cumsum(col)))
+            cs2 = np.concatenate(([0.0], np.cumsum(col * col)))
+            n_s = len(col)
+            f[j, 0] = cs2[-1] / n_s - (cs[-1] / n_s) ** 2
+            for l in range(1, args.max_bits + 1):
+                k = 2 ** l
+                qq = (np.arange(k) + 0.5) / k
+                c = col[np.minimum((qq * n_s).astype(int), n_s - 1)].copy()
+                for _ in range(100_000):
+                    bnd = 0.5 * (c[:-1] + c[1:])
+                    ii = np.searchsorted(col, bnd)
+                    lo = np.concatenate(([0], ii)); hi = np.concatenate((ii, [n_s]))
+                    cnt = hi - lo
+                    new = np.sort(np.where(cnt > 0,
+                                           (cs[hi] - cs[lo]) / np.maximum(cnt, 1), c))
+                    if float(np.max(np.abs(new - c))) < 1e-10:
+                        c = new; break
+                    c = new
+                bnd = 0.5 * (c[:-1] + c[1:])
+                ii = np.searchsorted(col, bnd)
+                lo = np.concatenate(([0], ii)); hi = np.concatenate((ii, [n_s]))
+                cnt = hi - lo
+                f[j, l] = float(np.sum((cs2[hi] - cs2[lo])
+                                       - 2 * c * (cs[hi] - cs[lo]) + c * c * cnt)) / n_s
+    else:
+        f = var[:, None] * Dg[None, :]
+
+    block_cost = (w[:, None] * f).reshape(nb, BLOCK, args.max_bits + 1).sum(axis=1)
 
     bits, cost, budget = solve_block_allocation(block_cost, args.bpd, args.max_bits)
 
