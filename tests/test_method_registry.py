@@ -34,7 +34,11 @@ def test_faiss_methods_constant():
 
 def test_all_methods_and_unified_dispatch():
     from haag_vq.benchmarks.method_registry import ALL_METHODS, build_quantizer
-    assert set(ALL_METHODS) == {"pq", "opq", "sq", "saq_paper", "ours", "rabitq", "lvq", "rankaware", "perdim_mse"}
+    assert set(ALL_METHODS) == {
+        "pq", "opq", "sq", "saq_paper", "ours", "ours_exact", "rabitq", "lvq",
+        "rankaware", "perdim_mse", "rankaware_exact", "perdim_mse_exact",
+        "lp_mse", "lp_ra05", "lp_ra1", "lp_q", "lp_q_emp",
+        "gbytes_mse", "gbytes_ra05", "gbytes_ra1"}
     # faiss dispatch works without the saq wheel
     q = build_quantizer("pq", bpd=4, D=48)
     assert q is not None
