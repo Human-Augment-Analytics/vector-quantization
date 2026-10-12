@@ -235,11 +235,15 @@ def main() -> None:
     order = np.argsort(-bits, kind="stable")                  # block order, widest first
     perm = (order[:, None] * BLOCK + np.arange(BLOCK)[None, :]).reshape(-1)
 
-    # Contiguous runs of equal width -> plan segments.
+    # Contiguous runs of equal width -> plan segments. Cap merged segments at
+    # 1024 dims: the engine's encode kernels hold ceil(D_seg/32) dims per lane
+    # in 32-entry local buffers (kMaxDimsPerLane) and CHECK-fail above that.
+    # A uniform allocation (e.g. 8 bpd) would otherwise merge into one segment.
+    MAX_SEG_DIMS = 1024
     sorted_bits = bits[order]
     plan: list[tuple[int, int]] = []
     for b in sorted_bits:
-        if plan and plan[-1][1] == b:
+        if plan and plan[-1][1] == b and plan[-1][0] + BLOCK <= MAX_SEG_DIMS:
             plan[-1] = (plan[-1][0] + BLOCK, int(b))
         else:
             plan.append((BLOCK, int(b)))
