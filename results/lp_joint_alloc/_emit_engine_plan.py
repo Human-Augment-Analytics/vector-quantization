@@ -185,11 +185,24 @@ def main() -> None:
         raw = np.fromfile(path, dtype=np.float32, count=take * (d + 1))
         return raw.reshape(take, d + 1)[:, 1:].astype(np.float64)
 
+    def _read_sample_tail(path, max_rows):
+        d = int(np.fromfile(path, dtype=np.int32, count=1)[0])
+        assert d == D
+        n_rows = path.stat().st_size // (4 * (d + 1))
+        take = min(max_rows, n_rows)
+        off = (n_rows - take) * (d + 1) * 4
+        raw = np.fromfile(path, dtype=np.float32, count=take * (d + 1), offset=off)
+        return raw.reshape(take, d + 1)[:, 1:].astype(np.float64)
+
+
     # Per-dim weights w_j
     if args.weights == "query":
-        Qs = _read_sample(src / "queries_pca.fvecs", 50_000)
+        # Query-covariance weights from held-out CORPUS rows (tail of the
+        # corpus, disjoint from the head cost-table sample), matching the
+        # harness; never the evaluation queries.
+        Qs = _read_sample_tail(src / "vectors_pca.fvecs", 50_000)
         w = (Qs ** 2).mean(axis=0)
-        print(f"weights=query from {Qs.shape[0]} queries")
+        print(f"weights=query from {Qs.shape[0]} held-out corpus rows")
     else:
         w = var ** args.alpha
 
