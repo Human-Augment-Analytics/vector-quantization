@@ -171,6 +171,32 @@ def main():
     fig2.savefig(OUT / "codebook_excess_mse.png", dpi=200)
     print(f"wrote {OUT/'codebook_excess_mse.png'}")
 
+    # combined two-panel figure (paper fig:finite-data): (a) centroid error
+    # ~1/sqrt(N), (b) excess population MSE ~1/N, one caption
+    figc, (axa, axb) = plt.subplots(1, 2, figsize=(7.8, 3.2))
+    for b, color in zip(BITS, ("C0", "C1", "C2")):
+        errs_b = [np.mean(err[b][n]) for n in NS]
+        axa.loglog(NS, errs_b, "o-", color=color, ms=4, label=f"$b={b}$")
+        xm_b = [np.mean(xmse[b][n]) for n in NS]
+        axb.loglog(NS, xm_b, "o-", color=color, ms=4, label=f"$b={b}$")
+    g1 = [np.mean(err[4][n]) for n in NS][0] * np.sqrt(NS[0] / np.asarray(NS, float))
+    axa.loglog(NS, g1, "k--", lw=1, alpha=0.6, label=r"$\propto 1/\sqrt{N}$")
+    g2 = [np.mean(xmse[4][n]) for n in NS][0] * (NS[0] / np.asarray(NS, float))
+    axb.loglog(NS, g2, "k--", lw=1, alpha=0.6, label=r"$\propto 1/N$")
+    axa.set_xlabel("training samples $N$")
+    axb.set_xlabel("training samples $N$")
+    axa.set_ylabel(r"max centroid error $\max_k |\hat{c}_k - c_k^{\,*}|$")
+    axb.set_ylabel(r"excess MSE  $D(\hat{c}) - D(c^{*})$")
+    for ax_ in (axa, axb):
+        ax_.legend(frameon=False, fontsize=8)
+        ax_.grid(True, which="both", alpha=0.25)
+    axa.set_title("(a) parameter error", fontsize=10)
+    axb.set_title("(b) induced distortion", fontsize=10)
+    figc.tight_layout()
+    figc.savefig(OUT / "finite_data_convergence.png", dpi=200)
+    print(f"wrote {OUT/'finite_data_convergence.png'}")
+
+
 
 if __name__ == "__main__":
     main()
